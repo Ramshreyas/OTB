@@ -1299,3 +1299,172 @@ class TestEnumerations:
 
     def test_valid_units_include_c_f_in_mm(self):
         assert VALID_UNITS == {"C", "F", "in", "mm"}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Live LLM Integration tests — use real Gemini API
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestGeminiLLMIntegration:
+    """Integration tests using the real Gemini API.
+
+    These require GEMINI_API_KEY set in the environment or .env file.
+    Skip them with: pytest -m "not integration"
+    """
+
+    @pytest.fixture
+    def gemini_extractor(self):
+        """Create the real Gemini extractor (skips if no API key)."""
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+
+        if not os.getenv("GEMINI_API_KEY"):
+            pytest.skip("GEMINI_API_KEY not set")
+
+        from src.retrieval.llm_extractor import create_gemini_extractor
+        return create_gemini_extractor()
+
+    @pytest.fixture
+    def all_cases(self):
+        """Load all 5 real market cases."""
+        from src.validation.loader import load_markets
+        from pathlib import Path
+        manifest = load_markets(
+            Path(__file__).resolve().parent.parent.parent / "data" / "markets.json"
+        )
+        return list(manifest.markets)
+
+    @pytest.mark.integration
+    def test_gemini_extracts_all_five_cases(self, gemini_extractor, all_cases):
+        """Gemini should successfully extract all 5 real market cases."""
+        for case in all_cases:
+            spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+            assert isinstance(spec, RetrievalSpec)
+            assert spec.station_code  # non-empty
+            assert spec.extraction_method == ExtractionMethod.LLM
+
+    @pytest.mark.integration
+    def test_gemini_tokyo_low_fields(self, gemini_extractor):
+        """Gemini should extract correct fields for Tokyo low market."""
+        case = _make_market_case(
+            case_id="tokyo_low",
+            title="Will the lowest temperature in Tokyo be 20°C on June 1?",
+            ancillary_data=(
+                "q: title: Will the lowest temperature in Tokyo be 20°C on June 1?, "
+                "description: This market will resolve to the temperature range that "
+                "contains the lowest temperature recorded at the Tokyo Haneda Airport "
+                "Station in degrees Celsius on 1 Jun '26.\n\n"
+                "The resolution source for this market will be information from "
+                "Wunderground, specifically the lowest temperature recorded for all "
+                "times on this day for the Tokyo Haneda Airport Station, available "
+                "here: https://www.wunderground.com/history/daily/jp/tokyo/RJTT.\n\n"
+                "To toggle between Fahrenheit and Celsius, click the gear icon next "
+                "to the search bar and switch the Temperature setting between °F "
+                "and °C.\n\n"
+                "This market can not resolve until the first data point for the "
+                "following date has been published on the resolution source.\n\n"
+                "The resolution source for this market measures temperatures to whole "
+                "degrees Celsius (eg, 9°C). Thus, this is the level of precision that "
+                "will be used when resolving the market.\n\n"
+                "res_data: p1: 0, p2: 1, p3: 0.5."
+            ),
+        )
+        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+
+        assert spec.extraction_method == ExtractionMethod.LLM
+        assert spec.source_type == "wunderground_station"
+        assert spec.station_code == "RJTT"
+        assert spec.station_url == "https://www.wunderground.com/history/daily/jp/tokyo/RJTT"
+        assert spec.measurement == "temperature"
+        assert spec.aggregation == "min"
+        assert spec.unit == "C"
+        assert spec.precision >= 1
+        assert spec.timezone == "Asia/Tokyo"
+        assert spec.target_window.start.date() == datetime(2026, 6, 1).date()
+        assert spec.finality_after.date() == datetime(2026, 6, 2).date()
+
+    @pytest.mark.integration
+    def test_gemini_denver_fields(self, gemini_extractor):
+        """Gemini should extract correct fields for Denver (KBKF, Fahrenheit)."""
+        case = _make_market_case(
+            case_id="denver_high",
+            title="Will the highest temperature in Denver be between 68-69°F on May 31?",
+            end_date_iso="2026-05-31T00:00:00Z",
+            ancillary_data=(
+                "q: title: Will the highest temperature in Denver be between 68-69°F "
+                "on May 31?, description: This market will resolve to the temperature "
+                "range that contains the highest temperature recorded at the Buckley "
+                "Space Force Base Station in degrees Fahrenheit on 31 May '26.\n\n"
+                "The resolution source for this market will be information from "
+                "Wunderground, specifically the highest temperature recorded for all "
+                "times on this day for the Buckley Space Force Base Station, available "
+                "here: https://www.wunderground.com/history/daily/us/co/aurora/KBKF.\n\n"
+                "To toggle between Fahrenheit and Celsius, click the gear icon next "
+                "to the search bar and switch the Temperature setting between °F and "
+                "°C.\n\n"
+                "This market can not resolve until the first data point for the "
+                "following date has been published on the resolution source.\n\n"
+                "The resolution source for this market measures temperatures to whole "
+                "degrees Fahrenheit (eg, 21°F). Thus, this is the level of precision "
+                "that will be used when resolving the market."
+            ),
+        )
+        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+
+        assert spec.extraction_method == ExtractionMethod.LLM
+        assert spec.station_code == "KBKF"
+        assert spec.unit == "F"
+        assert spec.aggregation == "max"
+        assert spec.target_window.start.date() == datetime(2026, 5, 31).date()
+
+    @pytest.mark.integration
+    def test_gemini_seoul_incheon_station_awareness(self, gemini_extractor):
+        """Gemini should extract RKSI for Seoul (Incheon), not a Seoul city station."""
+        case = _make_market_case(
+            case_id="seoul_low",
+            title="Will the lowest temperature in Seoul be 16°C on June 1?",
+            ancillary_data=(
+                "q: title: Will the lowest temperature in Seoul be 16°C on June 1?, "
+                "description: This market will resolve to the temperature range that "
+                "contains the lowest temperature recorded at the Incheon Intl Airport "
+                "Station in degrees Celsius on 1 Jun '26.\n\n"
+                "The resolution source for this market will be information from "
+                "Wunderground, specifically the lowest temperature recorded for all "
+                "times on this day for the Incheon Intl Airport Station, available "
+                "here: https://www.wunderground.com/history/daily/kr/incheon/RKSI.\n\n"
+                "Measures temperatures to whole degrees Celsius. "
+                "This market can not resolve until the first data point for the "
+                "following date has been published."
+            ),
+        )
+        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+
+        assert spec.extraction_method == ExtractionMethod.LLM
+        assert spec.station_code == "RKSI"
+        assert spec.timezone == "Asia/Seoul"
+        # City awareness note should be populated by station registry
+        assert spec.cross_validation.station_city_awareness is False
+        assert "Seoul" in spec.cross_validation.station_city_awareness_detail
+
+    @pytest.mark.integration
+    def test_gemini_fallback_on_gibberish_input(self, gemini_extractor):
+        """When ancillary_data is nonsense but has a valid station URL and date,
+        the LLM may fail and regex fallback should keep the pipeline from
+        crashing. Either LLM or regex should produce a viable spec."""
+        case = _make_market_case(
+            case_id="gibberish",
+            title="Will the temperature reach the threshold?",
+            ancillary_data=(
+                "asdf qwer zxcv 12345. "
+                "https://www.wunderground.com/history/daily/xx/yyy/ABCD. "
+                "Measures temperatures to whole degrees Celsius on 1 Jun '26. "
+                "No real data here."
+            ),
+        )
+        # This should not crash — either LLM succeeds or falls back to regex
+        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+        assert isinstance(spec, RetrievalSpec)
+        # The station ABCD is not in registry, falls back to UTC
+        assert spec.timezone == "UTC"
