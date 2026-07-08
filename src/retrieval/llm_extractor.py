@@ -47,42 +47,58 @@ def create_litellm_extractor():
     client = get_llm_client()
 
     def extract(ancillary_data: str, title: str) -> dict[str, object]:
-        """Extract RetrievalSpec fields using LLM via LiteLLM proxy."""
-        # ── Fetch prompt from Langfuse, or use fallback ──
-        try:
-            prompt = client.get_prompt("weather-spec-extraction", label="production")
-            compiled = prompt.compile(title=title, ancillary_data=ancillary_data)
-            langfuse_prompt = prompt
-        except Exception:
-            logger.warning("Langfuse prompt unavailable; using fallback prompt.")
-            compiled = _FALLBACK_PROMPT.format(title=title, ancillary_data=ancillary_data)
-            langfuse_prompt = None
+        """Extract RetrievalSpec fields using LLM via LiteLLM proxy.
 
-        logger.info("Calling LLM (%s) for spec extraction...", client.model)
+        Retries up to 3 times with exponential backoff on transient failures.
+        """
+        import time
+        last_error = None
+        for attempt in range(3):
+            try:
+                # ── Fetch prompt from Langfuse, or use fallback ──
+                try:
+                    prompt = client.get_prompt("weather-spec-extraction", label="production")
+                    compiled = prompt.compile(title=title, ancillary_data=ancillary_data)
+                    langfuse_prompt = prompt
+                except Exception:
+                    logger.warning("Langfuse prompt unavailable; using fallback prompt.")
+                    compiled = _FALLBACK_PROMPT.format(title=title, ancillary_data=ancillary_data)
+                    langfuse_prompt = None
 
-        response = client.complete(
-            messages=[{"role": "user", "content": compiled}],
-            temperature=0.0,
-            max_tokens=2048,
-            langfuse_prompt=langfuse_prompt,
-        )
+                logger.info("Calling LLM (%s) for spec extraction (attempt %d/3)...",
+                           client.model, attempt + 1)
 
-        raw_text = response["content"]
-        logger.debug(
-            "LLM response: %d chars, %dms, %d tokens",
-            len(raw_text), response["latency_ms"],
-            response["usage"]["completion_tokens"],
-        )
+                response = client.complete(
+                    messages=[{"role": "user", "content": compiled}],
+                    temperature=0.0,
+                    max_tokens=2048,
+                    langfuse_prompt=langfuse_prompt,
+                )
 
-        # ── Parse JSON ──
-        raw_text = _strip_markdown_fences(raw_text)
-        try:
-            llm_result = json.loads(raw_text)
-        except json.JSONDecodeError as e:
-            logger.error("LLM returned invalid JSON: %s", e)
-            raise ValueError(f"LLM returned invalid JSON: {e}") from e
+                raw_text = response["content"]
+                logger.debug(
+                    "LLM response: %d chars, %dms, %d tokens",
+                    len(raw_text), response["latency_ms"],
+                    response["usage"]["completion_tokens"],
+                )
 
-        return _normalize_result(llm_result)
+                # ── Parse JSON ──
+                raw_text = _strip_markdown_fences(raw_text)
+                llm_result = json.loads(raw_text)
+                return _normalize_result(llm_result)
+
+            except json.JSONDecodeError as e:
+                logger.error("LLM returned invalid JSON (attempt %d/3): %s", attempt + 1, e)
+                last_error = ValueError(f"LLM returned invalid JSON: {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+            except Exception as e:
+                logger.warning("LLM extraction attempt %d/3 failed: %s", attempt + 1, e)
+                last_error = e
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+
+        raise last_error  # type: ignore[misc]
 
     return extract
 

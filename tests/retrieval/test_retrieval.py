@@ -1324,9 +1324,9 @@ class TestDispatchIntegration:
 
         mock_get.side_effect = [mock_response, mock_finality_response]
 
-        # Create spec from market case
+        # Create spec from market case (regex only — no LLM needed for mocked test)
         case = _make_market_case()
-        spec = compose_retrieval_spec(case)
+        spec = compose_retrieval_spec(case, use_litellm=False)
 
         # Retrieve
         batch = retrieve_observations(spec, mode="live")
@@ -1379,7 +1379,7 @@ class TestDispatchIntegration:
             ),
         )
 
-        spec = compose_retrieval_spec(case)
+        spec = compose_retrieval_spec(case, use_litellm=False)
         batch = retrieve_observations(spec, mode="live")
 
         assert batch.extracted_value.value == 72.0  # max of [65,68,70,72]

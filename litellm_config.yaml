@@ -2,11 +2,11 @@
 # The proxy runs on port 4000. Clients talk to http://localhost:4000/v1
 
 model_list:
-  - model_name: gemini-2.5-flash
+  - model_name: deepseek-chat
     litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: ${GEMINI_API_KEY}
-      rpm: 30  # generous for single-user dev
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      rpm: 30
 
 general_settings:
   master_key: sk-litellm-otb-master-key

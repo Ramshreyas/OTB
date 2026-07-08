@@ -189,7 +189,7 @@ services:
       - ./litellm_config.yaml:/app/config.yaml:ro
     command: --config /app/config.yaml --detailed_debug
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
 
 volumes:
   pgdata:
