@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://otb-weather-resolver/schemas/market_input.schema.json",
+  "title": "OTB Weather Market Input Manifest",
+  "description": "Schema for the markets.json input manifest consumed by the OTB weather market resolver.",
+  "type": "object",
+  "required": ["schema_version", "markets"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of the input manifest schema."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the manifest was generated."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the manifest contents."
+    },
+    "market_selection": {
+      "type": "object",
+      "description": "Metadata about how markets were selected for this manifest."
+    },
+    "markets": {
+      "type": "array",
+      "description": "Array of market cases to resolve.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/market_case"
+      }
+    }
+  },
+  "$defs": {
+    "market_case": {
+      "type": "object",
+      "required": ["case_id", "polymarket_url", "proposal_tx_hash", "question_data", "ancillary_data"],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this market case."
+        },
+        "polymarket_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the Polymarket event page."
+        },
+        "proposal_tx_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Transaction hash of the OTB proposal."
+        },
+        "fixture_path": {
+          "type": "string",
+          "description": "Optional path to a pre-captured fixture file for replay mode."
+        },
+        "question_data": {
+          "$ref": "#/$defs/question_data"
+        },
+        "ancillary_data": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Raw ancillary data string containing station URL, unit, precision, finality rules, and bulletin board info."
+        }
+      },
+      "additionalProperties": true
+    },
+    "question_data": {
+      "type": "object",
+      "required": ["title", "end_date_iso", "outcomes"],
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market_slug": {
+          "type": "string"
+        },
+        "gamma_slug": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The market question title (e.g., 'Will the lowest temperature in Tokyo be 20°C on June 1?')."
+        },
+        "proposal_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "processed_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_date_iso": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO 8601 date (or datetime) for the target resolution date."
+        },
+        "resolution_conditions": {
+          "type": "string"
+        },
+        "proposed_outcome": {
+          "type": "string"
+        },
+        "outcomes": {
+          "$ref": "#/$defs/outcomes"
+        }
+      },
+      "additionalProperties": true
+    },
+    "outcomes": {
+      "type": "object",
+      "required": ["p1", "p2", "p3", "p4"],
+      "properties": {
+        "p1": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Label for the p1 outcome (typically 'No')."
+        },
+        "p2": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Label for the p2 outcome (typically 'Yes')."
+        },
+        "p3": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Label for the p3 outcome (typically '50/50 outcome')."
+        },
+        "p4": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Label for the p4 outcome (typically 'Too Early')."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

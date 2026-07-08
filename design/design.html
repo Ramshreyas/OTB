@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTB Weather Resolver — Pipeline Design</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel-bg: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb33;
+    --green: #3fb950;
+    --yellow: #d2991d;
+    --red: #f85149;
+    --purple: #a371f7;
+    --orange: #d1864a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Top section: aside + main ── */
+  .top {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* ── Left Panel ── */
+  aside {
+    width: 320px;
+    min-width: 320px;
+    background: var(--panel-bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 24px 0;
+  }
+  aside header {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+  aside header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .stepper { list-style: none; }
+
+  .stepper li {
+    position: relative;
+    padding: 14px 20px 14px 52px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+    user-select: none;
+  }
+  .stepper li:hover { background: rgba(255,255,255,0.03); }
+  .stepper li.active {
+    background: var(--accent-dim);
+    border-left-color: var(--accent);
+  }
+  .stepper li.visited .step-num {
+    border-color: var(--green);
+    background: var(--green);
+    color: #fff;
+  }
+  .stepper li.active .step-num {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+  .stepper li .step-num {
+    position: absolute;
+    left: 16px; top: 14px;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .stepper li .step-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .stepper li .step-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .stepper .connector {
+    position: absolute;
+    left: 27px; top: 42px;
+    width: 2px; height: calc(100% - 28px);
+    background: var(--border);
+  }
+  .stepper li:last-child .connector { display: none; }
+
+  /* ── Right Panel ── */
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 36px 48px;
+  }
+
+  .stage-detail { display: none; }
+  .stage-detail.visible { display: block; }
+
+  .stage-detail h2 {
+    font-size: 22px; font-weight: 600; margin-bottom: 4px;
+  }
+  .stage-detail .module {
+    font-size: 13px; color: var(--text-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    margin-bottom: 24px;
+  }
+  .stage-detail .section { margin-bottom: 28px; }
+  .stage-detail .section h3 {
+    font-size: 15px; font-weight: 600; color: var(--text);
+    margin-bottom: 8px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .stage-detail .section p, .stage-detail .section ul {
+    font-size: 14px; color: var(--text-muted); line-height: 1.6;
+  }
+  .stage-detail .section ul {
+    list-style: none; padding-left: 0;
+  }
+  .stage-detail .section ul li::before {
+    content: "→"; color: var(--accent); margin-right: 8px;
+  }
+
+  .io-row { display: flex; gap: 20px; flex-wrap: wrap; }
+  .io-box {
+    flex: 1; min-width: 200px;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 16px;
+  }
+  .io-box .io-label {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 6px;
+  }
+  .io-box .io-value {
+    font-size: 13px; color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .annotation { margin-top: 16px; }
+  .annotation summary {
+    font-size: 13px; font-weight: 500; color: var(--accent);
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .annotation summary::before {
+    content: "+"; display: inline-block; width: 16px;
+    text-align: center; font-family: monospace; transition: transform 0.2s;
+  }
+  .annotation[open] summary::before { content: "−"; }
+  .annotation .annot-body {
+    margin-top: 10px; margin-left: 22px;
+    padding: 12px 16px;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px; color: var(--text-muted); line-height: 1.6;
+  }
+  .annotation .annot-body code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 5px; border-radius: 3px; font-size: 12px;
+  }
+
+  .gate-table {
+    width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px;
+  }
+  .gate-table th {
+    text-align: left; padding: 8px 12px;
+    background: var(--panel-bg); color: var(--text);
+    font-weight: 600; border-bottom: 1px solid var(--border);
+  }
+  .gate-table td {
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .gate-table .gate-p4 { color: var(--yellow); font-weight: 600; }
+  .gate-table .gate-unclear { color: var(--red); font-weight: 600; }
+
+  .retrieval-flow {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 0; margin: 16px 0; font-size: 12px;
+  }
+  .retrieval-flow .rf-node {
+    background: var(--panel-bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 14px; text-align: center; white-space: nowrap;
+  }
+  .retrieval-flow .rf-arrow { color: var(--text-muted); margin: 0 6px; font-size: 18px; }
+  .retrieval-flow .rf-node.fail { border-color: var(--red); }
+  .retrieval-flow .rf-node.retry { border-color: var(--yellow); }
+  .retrieval-flow .rf-label { font-size: 10px; color: var(--text-muted); margin: 0 4px; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 10px; font-size: 11px; font-weight: 500;
+  }
+  .badge.green { background: #1b3824; color: var(--green); }
+  .badge.yellow { background: #332a12; color: var(--yellow); }
+  .badge.red { background: #361b1b; color: var(--red); }
+  .badge.blue { background: #152238; color: var(--accent); }
+  .badge.purple { background: #261b38; color: var(--purple); }
+
+  /* ── Bottom Panel: Observability ── */
+  .obs-panel {
+    height: 340px;
+    min-height: 200px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-bg);
+    display: flex;
+    flex-direction: column;
+  }
+  .obs-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 24px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .obs-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--orange);
+    box-shadow: 0 0 8px var(--orange);
+    animation: pulse 2s infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .obs-header span {
+    font-size: 13px; font-weight: 600; color: var(--text);
+  }
+  .obs-header small {
+    font-size: 11px; color: var(--text-muted);
+  }
+  .obs-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 24px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    counter-reset: trace;
+  }
+  .obs-body .trace-line {
+    color: var(--text-muted);
+    opacity: 0;
+    transform: translateY(6px);
+    animation: trace-in 0.35s ease-out forwards;
+  }
+  @keyframes trace-in {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .trace-line .tl-stage { color: var(--accent); font-weight: 500; }
+  .trace-line .tl-ts { color: var(--text-muted); }
+  .trace-line .tl-data { color: var(--green); }
+  .trace-line .tl-gate { color: var(--yellow); }
+  .trace-line .tl-warn { color: var(--orange); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ TOP SECTION ═══════════ -->
+<div class="top">
+
+<!-- Left: Stepper -->
+<aside>
+  <header><h2>Resolution Pipeline</h2></header>
+  <ul class="stepper" id="stepper"></ul>
+</aside>
+
+<!-- Right: Detail -->
+<main id="main">
+
+  <!-- ═══ Stage: Input & Validation ═══ -->
+  <div class="stage-detail visible" id="detail-input">
+    <h2>Input &amp; Validation</h2>
+    <div class="module">src/validation/loader.py, schema.py, models.py</div>
+
+    <div class="section">
+      <h3>What it does</h3>
+      <ul>
+        <li>Loads <code>markets.json</code> from the <code>--input</code> path</li>
+        <li>Validates every case object against the input schema</li>
+        <li>Fails fast if any case is malformed — no partial processing</li>
+        <li>Each validated case is loaded into an immutable data structure</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h3>Input → Output</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label">Input</div>
+          <div class="io-value">markets.json (manifest with case_id, question_data, ancillary_data)</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label">Output</div>
+          <div class="io-value">List[MarketCase] — immutable, validated</div>
+        </div>
+      </div>
+    </div>
+
+    <details class="annotation">
+      <summary>Schema validation — what gets checked</summary>
+      <div class="annot-body">
+        <p>Each market case must have:</p>
+        <ul style="padding-left:16px;">
+          <li><code>case_id</code> — unique string identifier</li>
+          <li><code>polymarket_url</code> — valid URL</li>
+          <li><code>question_data.outcomes</code> — p1/p2/p3/p4 labels present</li>
+          <li><code>ancillary_data</code> — non-empty string with station URL, unit, precision, finality rule</li>
+          <li><code>question_data.end_date_iso</code> — parseable date</li>
+        </ul>
+        <p style="margin-top:8px;">Schema lives in <code>data/schema/market_input.schema.json</code>. Missing required fields or malformed dates cause immediate rejection with a clear error message.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>Why immutability matters</summary>
+      <div class="annot-body">
+        <p>Market cases are frozen after load. Every subsequent pipeline stage builds a parallel resolution data structure rather than mutating the original. This ensures:</p>
+        <ul style="padding-left:16px;">
+          <li>The source of truth is preserved for trace/debug</li>
+          <li>Replay runs produce identical intermediate states</li>
+          <li>Concurrent processing (future) is safe by default</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Compose Retrieval Spec ═══ -->
+  <div class="stage-detail" id="detail-spec">
+    <h2>Compose Retrieval Spec</h2>
+    <div class="module">src/retrieval/spec.py, guardrails.py, source_detector.py</div>
+
+    <div class="section">
+      <h3>What it does</h3>
+      <p>Takes the validated market case and produces a complete, structured <code>RetrievalSpec</code> that tells the retrieval layer exactly what to fetch, where, and with what guardrails.</p>
+      <ul>
+        <li>Feeds the full <code>ancillary_data</code> string and <code>question_data.title</code> to an LLM with a structured output schema to extract the station URL, target window, measurement type, unit, precision, finality threshold, and source type</li>
+        <li>Validates the LLM's output against the <code>RetrievalSpec</code> schema; falls back to regex extraction if the LLM is unavailable or returns non-conforming output</li>
+        <li>Runs a station registry lookup to enrich the result with timezone, full URL construction from bare ICAO codes, and known station metadata</li>
+        <li>Attaches station-specific guardrails — known quirks, timing expectations, and retry guidance — that the retrieval layer uses to harden its strategy</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h3>How parsing works</h3>
+      <p><code>ancillary_data</code> is free-text written as instructions for a human browsing a weather website. It can embed URLs mid-paragraph, include UI navigation tips, state finality rules in prose, and vary in structure across markets. Extraction is <strong>LLM-first with deterministic fallback</strong>:</p>
+      <table class="gate-table">
+        <tr><th>Layer</th><th>Method</th><th>What it handles</th></tr>
+        <tr><td>1. LLM extraction</td><td>Single LLM call with a structured output schema</td><td>The primary path. The LLM receives the full <code>ancillary_data</code> string and <code>question_data.title</code>, and is prompted to return the structured fields (source type, station URL, target window, measurement type, unit, precision, finality after). The prompt includes the exact schema, field descriptions, and examples. Because ancillary_data is already human-readable instructional text, an LLM can read it as intended — it understands "the highest temperature recorded … available here: &lt;url&gt;" without needing a URL regex, and can infer the window from phrases like "on 1 Jun '26" (single day) or "for May 2026" (full month).</td></tr>
+        <tr><td>2. Schema validation</td><td>Validation of LLM output against RetrievalSpec schema</td><td>Every LLM response is validated. Fields must match expected types, URLs must be syntactically valid, dates must be parseable, measurement types must be from a known enum. If validation fails, the output is discarded and extraction falls back to layer 3.</td></tr>
+        <tr><td>3. Regex fallback</td><td>Pre-compiled regex patterns per field</td><td>Deterministic safety net. Used when the LLM is unavailable, returns non-conforming output, or as a cost-saving fast path for simple cases. Matches Wunderground/NOAA URL patterns, ISO dates, known unit phrases, precision phrases.</td></tr>
+        <tr><td>4. Station registry</td><td>Lookup table of known ICAO codes</td><td>Augments extracted results regardless of which layer produced them. Resolves bare ICAO codes to full URLs and maps stations to IANA timezones. Also used as a cross-reference: if the LLM extracts "RJTT" as the station code, the registry confirms it and provides the timezone.</td></tr>
+      </table>
+      <p style="margin-top:12px;">Layer 1 is the default. Layers 3–4 are always available as fallback, but they are not invoked when the LLM produces a valid, schema-conforming result. The station registry (layer 4) always runs after extraction to enrich the result, regardless of which layer produced it.</p>
+    </div>
+
+    <div class="section">
+      <h3>Core fields in the resulting RetrievalSpec</h3>
+      <table class="gate-table">
+        <tr><th>Field</th><th>Primary source</th><th>Fallback</th><th>Example</th></tr>
+        <tr><td>Source type</td><td>LLM extraction from ancillary_data</td><td>Regex URL domain pattern</td><td><code>wunderground_station</code> | <code>noaa_monthly</code></td></tr>
+        <tr><td>Station URL</td><td>LLM extraction from ancillary_data</td><td>Regex URL match, or constructed from ICAO code via station registry</td><td><code>…/history/daily/jp/tokyo/RJTT</code></td></tr>
+        <tr><td>Target window</td><td>LLM extraction from ancillary_data + <code>end_date_iso</code></td><td>Regex date range match</td><td><code>{"start": "2026-06-01T00:00:00+09:00", "end": "2026-06-01T23:59:59+09:00"}</code> — single day. <code>{"start": "2026-05-01", "end": "2026-05-31"}</code> — month</td></tr>
+        <tr><td>Measurement</td><td>LLM extraction from question title + ancillary_data</td><td>Keyword match on <code>question_data.title</code></td><td><code>temperature</code> | <code>precipitation</code> | <code>wind_speed</code> | <code>wind_gust</code> | <code>humidity</code> | <code>visibility</code> | <code>pressure</code> | <code>snow</code> | <code>uv_index</code> | <code>cloud_cover</code> | <code>dew_point</code> | … <br>The enum is descriptive, not exhaustive. The LLM maps free-text in ancillary_data ("highest wind gust", "lowest visibility", "snowfall total") to the closest known measurement. Unknown measurements gate to <code>unclear</code> — the resolver cannot retrieve a field it doesn't understand. The retrieval layer maps each measurement to the corresponding Wunderground API or NOAA field name (e.g., <code>wind_gust</code> → <code>gust</code>, <code>temperature</code> → <code>temp</code>).</td></tr>
+        <tr><td>Aggregation</td><td>LLM extraction from question title + ancillary_data</td><td>Keyword match: "lowest" / "minimum" → <code>min</code>, "highest" / "maximum" → <code>max</code>, "total" / "precipitation" → <code>sum</code>, exact-time reference → <code>point</code></td><td><code>min</code> — lowest temperature over the window. <code>max</code> — highest. <code>sum</code> — accumulated precip. <code>point</code> — observation at a specific timestamp within the window.</td></tr>
+        <tr><td>Unit</td><td>LLM extraction from ancillary_data</td><td>Regex unit phrase match, or station registry default</td><td><code>C</code> | <code>F</code> | <code>in</code></td></tr>
+        <tr><td>Precision</td><td>LLM extraction from ancillary_data</td><td>Regex precision phrase match; default: 1 for temp, 2 for precip</td><td><code>1</code> | <code>2</code></td></tr>
+        <tr><td>Timezone</td><td>Station registry lookup from station code</td><td>LLM extraction from ancillary_data (e.g., "Japan Standard Time"), or inferred from country code in URL</td><td><code>Asia/Tokyo</code> — IANA timezone name. Required by the normalization stage to compare observation timestamps against the target window. A UTC offset alone is insufficient: DST transitions make offsets ambiguous. The station registry is the authoritative source; city-name-based timezone lookup is never used.</td></tr>
+        <tr><td>Finality after</td><td>LLM extraction from ancillary_data (e.g., "cannot resolve until the first data point for the following date")</td><td>Window end + 1 day</td><td><code>2026-06-02T00:00:00+09:00</code> — next local day after window end. For monthly: window end + 1 day. For intraday: first datapoint after window end (may still be same calendar day).</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>Cross-validation with question_data</h3>
+      <p>After extraction, the retrieved fields are cross-checked against <code>question_data</code> to catch disagreements between what ancillary_data describes and what the market metadata asserts. A mismatch does not automatically block resolution, but it reduces confidence and may gate to <code>unclear</code> if the conflict is fundamental.</p>
+      <table class="gate-table">
+        <tr><th>Check</th><th>Sources compared</th><th>If they disagree</th></tr>
+        <tr><td>Date/window agreement</td><td>Extracted target window vs. <code>end_date_iso</code></td><td><span class="badge yellow">p4-adjacent</span> — if <code>end_date_iso</code> falls within the extracted window, they agree. If they reference different calendar days or non-overlapping ranges, the case gates to <code>unclear</code> — the market's own metadata contradicts its resolution instructions. If the window is a month but <code>end_date_iso</code> is the first day of that month, the window is authoritative (NOAA monthly summaries resolve against the full month, not a single day).</td></tr>
+        <tr><td>Unit consistency</td><td>Extracted unit vs. unit implied by question title (e.g., title says <code>20°C</code> but ancillary_data describes Fahrenheit)</td><td><span class="badge yellow">Flagged</span> — title and ancillary_data describe different units. The ancillary_data unit takes precedence (it's the resolution source), but the mismatch is recorded in the trace and confidence is reduced. Post-retrieval, the actual observation unit is verified.</td></tr>
+        <tr><td>Measurement consistency</td><td>Extracted measurement type vs. title keywords</td><td><span class="badge yellow">Flagged</span> — title says "lowest" but ancillary_data extraction returned <code>daily_high</code>. The LLM extraction is re-prompted with both texts side-by-side. If the conflict persists, gates to <code>unclear</code>.</td></tr>
+        <tr><td>Station ⇔ city awareness</td><td>Station code in URL vs. city name in title</td><td><span class="badge blue">Noted</span> — does not gate, but recorded in trace for operator visibility. "Denver" resolving to KBKF in Aurora is correct per ancillary_data, but an operator reviewing the trace should see this flagged so they understand why the station differs from the city in the title.</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>Gating decisions</h3>
+      <p>These are hard gates — if any fail, the case cannot proceed to retrieval:</p>
+      <table class="gate-table">
+        <tr><th>Check</th><th>If it fails</th></tr>
+        <tr><td>Station URL present or constructible?</td><td class="gate-unclear">unclear — unresolvable source</td></tr>
+        <tr><td>Target window parseable?</td><td class="gate-unclear">unclear — date/window ambiguity</td></tr>
+        <tr><td>Measurement recognized?</td><td class="gate-unclear">unclear — unknown measurement type, no retrieval mapping</td></tr>
+        <tr><td>Source type recognized?</td><td class="gate-unclear">unclear — unknown source, no retrieval strategy</td></tr>
+        <tr><td>Unit specified or reliably inferrable?</td><td class="gate-yellow">Flagged — unit ambiguity, will verify post-retrieval</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>Guardrails — operational hints for the retrieval layer</h3>
+      <p>After extraction, the RetrievalSpec is augmented with station-specific notes drawn from a curated registry of known behaviors. The retrieval layer reads these to adjust its strategy:</p>
+      <table class="gate-table">
+        <tr><th>Guardrail type</th><th>Example</th></tr>
+        <tr><td>Unit-label verification</td><td>"RJTT returns °C regardless of query param — verify response unit label, not request param"</td></tr>
+        <tr><td>Partial-data windows</td><td>"KBKF may serve intraday values before 06:00 local — if retrieval is near day boundary, flag incomplete"</td></tr>
+        <tr><td>Source lag tolerance</td><td>"NOAA monthly summaries lag 3–5 days after month-end — extend effective finality date"</td></tr>
+        <tr><td>Expected response shape</td><td>"Daily high/low appears in a 24-row observations table — fewer rows = partial data; flag in quality check"</td></tr>
+        <tr><td>Retry guidance</td><td>"This station is known to 503 under load — retry up to 3× with 5s backoff before falling back to Playwright"</td></tr>
+      </table>
+    </div>
+
+    <details class="annotation">
+      <summary>City name is not station — the Denver/Buckley problem</summary>
+      <div class="annot-body">
+        <p>The market title often says "Denver" but the resolution source is Buckley Space Force Base (KBKF) in Aurora, CO. "Seoul" resolves to Incheon Intl (RKSI), not a Seoul city station. The RetrievalSpec always uses the exact Wunderground URL from ancillary_data, never derives a station from the market title.</p>
+        <p style="margin-top:8px;">If ancillary_data contains only a station name without a URL, the spec stage must construct the URL from known station registries (ICAO → Wunderground path mapping) or flag the case as <code>unclear</code>. It must not guess a station from a city name.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>LLM extraction: the primary path</summary>
+      <div class="annot-body">
+        <p><code>ancillary_data</code> is written as instructions for a human with a browser. It describes where to go, what to look for, and how to interpret it — exactly the kind of text an LLM reads well.</p>
+        <p style="margin-top:8px;">The LLM receives the full <code>ancillary_data</code> string plus <code>question_data.title</code> and is prompted to return a structured JSON object with all RetrievalSpec fields. The prompt includes the exact output schema, field-by-field descriptions, and 2–3 annotated examples drawn from real markets. The LLM is asked to return <code>null</code> for any field it cannot determine.</p>
+        <p style="margin-top:8px;">The response is validated against the RetrievalSpec schema. Fields the LLM left as <code>null</code> trigger the regex fallback for those specific fields only. A completely non-conforming response (wrong types, hallucinated URLs) is discarded entirely and the regex fallback handles the whole extraction. The LLM gets one call per market — no iterative prompting.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Retrieval ═══ -->
+  <div class="stage-detail" id="detail-retrieval">
+    <h2>Retrieval</h2>
+    <div class="module">src/retrieval/replay.py, live.py, wunderground_api.py, wunderground_playwright.py</div>
+
+    <div class="section">
+      <h3>Mode selection</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label"><span class="badge blue">Replay</span> mode</div>
+          <div class="io-value">Loads pre-captured fixture from <code>data/fixtures/</code> by case_id. Deterministic, no network calls.</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label"><span class="badge green">Live</span> mode</div>
+          <div class="io-value">Fetches from Wunderground/NOAA. Records snapshots for future replay. Falls back through strategies on failure.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Live retrieval fallback chain</h3>
+      <div class="retrieval-flow">
+        <div class="rf-node">Direct HTTP<br><small>Wunderground history endpoint</small></div>
+        <span class="rf-arrow">→</span>
+        <span class="rf-label">on fail</span>
+        <span class="rf-arrow">→</span>
+        <div class="rf-node">Playwright<br><small>headless browser, table extract</small></div>
+        <span class="rf-arrow">→</span>
+        <span class="rf-label">on fail</span>
+        <span class="rf-arrow">→</span>
+        <div class="rf-node retry">Retry<br><small>back to HTTP</small></div>
+        <span class="rf-arrow">→</span>
+        <span class="rf-label">exhausted</span>
+        <span class="rf-arrow">→</span>
+        <div class="rf-node fail">unclear<br><small>retrieval exhaustion</small></div>
+      </div>
+    </div>
+
+    <details class="annotation">
+      <summary>Source trace — what gets recorded per retrieval</summary>
+      <div class="annot-body">
+        <p>Every retrieval attempt records:</p>
+        <ul style="padding-left:16px;">
+          <li>Exact URL and query parameters</li>
+          <li>HTTP status code and response size</li>
+          <li>Timestamp of retrieval (UTC)</li>
+          <li>Path taken: <code>api</code> or <code>playwright</code></li>
+          <li>Latency in milliseconds</li>
+          <li>Any errors or fallback triggers</li>
+        </ul>
+        <p style="margin-top:8px;">This makes every decision debuggable — an operator can replay the exact query that produced a given result.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>Why retrieval failures produce unclear (not guesses)</summary>
+      <div class="annot-body">
+        <p>If both API and Playwright strategies are exhausted, the resolver returns <code>unclear</code> rather than guessing. A wrong confident p1/p2 based on missing data is strictly worse than admitting the data wasn't retrievable. The system does not hallucinate weather observations.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Normalization ═══ -->
+  <div class="stage-detail" id="detail-normalization">
+    <h2>Normalization</h2>
+    <div class="module">src/normalization/units.py, precision.py, timezone.py, quality.py</div>
+
+    <div class="section">
+      <h3>What it does</h3>
+      <ul>
+        <li>Converts raw source values to the unit expected by the market</li>
+        <li>Rounds to market-specified precision (whole degrees for temp, 2 decimals for precip)</li>
+        <li>Ensures the observation falls within the station's local day, not UTC</li>
+        <li>Flags missing, partial, or anomalous data before it reaches reconciliation</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h3>Gating decisions</h3>
+      <table class="gate-table">
+        <tr><th>Check</th><th>If it fails</th></tr>
+        <tr><td>Unit conversion possible?</td><td class="gate-unclear">unclear — unit provenance conflict</td></tr>
+        <tr><td>Precision rounding unambiguous?</td><td class="gate-unclear">unclear — ambiguous rounding edge case</td></tr>
+        <tr><td>Station local day boundaries known?</td><td class="gate-unclear">unclear — timezone unresolvable</td></tr>
+        <tr><td>Observation present and complete?</td><td class="gate-unclear">unclear — missing daily high/low</td></tr>
+        <tr><td>Not intraday point masquerading as daily?</td><td class="gate-unclear">unclear — partial data</td></tr>
+      </table>
+    </div>
+
+    <details class="annotation">
+      <summary>Timezone: station local day, not UTC</summary>
+      <div class="annot-body">
+        <p>A "June 1" observation at Tokyo Haneda spans 2026-06-01 00:00 to 23:59 JST (UTC+9). If the resolver naively uses UTC, observations from 15:00–23:59 UTC on May 31 would be incorrectly assigned to May 31 instead of June 1 JST.</p>
+        <p style="margin-top:8px;">Timezone is derived from station metadata (ICAO code → IANA timezone) or from the Wunderground page's own timezone label. City-name-based lookup is explicitly avoided.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>Precision: "whole degrees" means the station's own reported value</summary>
+      <div class="annot-body">
+        <p>Wunderground stations report daily high/low as whole-degree values. The ancillary data says "measures temperatures to whole degrees" — this means the station's reported integer value is authoritative. If a derived calculation produces 68.7, the resolver uses the station's own reported 68 or 69, not a rounded derived value.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Reconciliation ═══ -->
+  <div class="stage-detail" id="detail-reconciliation">
+    <h2>Reconciliation</h2>
+    <div class="module">src/reconciliation/rule_parser.py, finality.py, comparator.py</div>
+
+    <div class="section">
+      <h3>Three sub-stages</h3>
+      <p>Reconciliation has three sequential checks. The first two are gates — if either fails, the market does not proceed to threshold comparison.</p>
+    </div>
+
+    <div class="section">
+      <h3>1. Parse Market Rules</h3>
+      <p>Extracts the comparison operator and threshold from the question title and ancillary data.</p>
+      <table class="gate-table">
+        <tr><th>Question pattern</th><th>Operator</th><th>Threshold</th></tr>
+        <tr><td>"be 20°C on June 1?"</td><td>exact (==)</td><td>20</td></tr>
+        <tr><td>"be 29°C or higher?"</td><td>≥</td><td>29</td></tr>
+        <tr><td>"be 22°C or below?"</td><td>≤</td><td>22</td></tr>
+        <tr><td>"between 68-69°F?"</td><td>range (∈)</td><td>[68, 69]</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>2. Finality Gate</h3>
+      <ul>
+        <li>Checks whether at least one observation timestamp exists for date+1 on the same station</li>
+        <li>If next-day data does not exist → <span class="badge yellow">p4: Too Early</span></li>
+        <li>This is checked <em>before</em> threshold comparison — nothing else matters if the market isn't final</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h3>3. Evidence-to-Rules Comparison</h3>
+      <ul>
+        <li>Applies the parsed operator to the normalized observation</li>
+        <li>Clear match → reconciliation verdict (Yes/No)</li>
+        <li>Ambiguous, incomplete, or conflicting data → <span class="badge red">unclear</span></li>
+      </ul>
+    </div>
+
+    <details class="annotation">
+      <summary>Why finality comes first</summary>
+      <div class="annot-body">
+        <p>The market rules state: "This market can not resolve until the first data point for the following date has been published." This is a hard gate. Checking finality requires a retrieval (of date+1), but the result gates everything downstream. If finality fails, normalization and comparison work is saved.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>Bracket and tie rules from ancillary data</summary>
+      <div class="annot-body">
+        <p>The <code>res_data</code> field in ancillary data specifies how ties are handled: <code>p1: 0, p2: 1, p3: 0.5</code>. For an exact-match market like "be 20°C", if the observation is exactly 20°C, the outcome is p2 (Yes). The bracket rules define which side of a threshold boundary wins.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Decision ═══ -->
+  <div class="stage-detail" id="detail-decision">
+    <h2>Decision</h2>
+    <div class="module">src/decision/resolver.py, confidence.py, quorum.py</div>
+
+    <div class="section">
+      <h3>Two paths to a recommendation</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label"><span class="badge green">Rule-based</span> (primary)</div>
+          <div class="io-value">Direct mapping from reconciliation verdict + confidence score. Handles the vast majority of markets — weather thresholds are deterministic.</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label"><span class="badge purple">LLM quorum</span> (edge cases)</div>
+          <div class="io-value">Invoked only when rule-based confidence is borderline. 2+ models must agree; no consensus → unclear.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Confidence scoring tiers</h3>
+      <table class="gate-table">
+        <tr><th>Tier</th><th>Confidence</th><th>Conditions</th></tr>
+        <tr><td>High</td><td>0.9 – 1.0</td><td>Direct API response, clear comparison, all quality checks pass</td></tr>
+        <tr><td>Medium</td><td>0.7 – 0.9</td><td>Playwright fallback used, or minor data quality flags (resolvable)</td></tr>
+        <tr><td>Low</td><td>0.5 – 0.7</td><td>Ambiguous parsing, unit inference required, edge case</td></tr>
+        <tr><td>Insufficient</td><td>&lt; 0.5</td><td>→ <span class="badge red">unclear</span></td></tr>
+      </table>
+    </div>
+
+    <details class="annotation">
+      <summary>Conservative default: unclear beats wrong-confident</summary>
+      <div class="annot-body">
+        <p>A wrong confident p1 or p2 is worse than returning <code>unclear</code> on an ambiguous case. This bias is built into every decision point: confidence must clear a minimum threshold before a definitive p1/p2 is emitted. When in doubt, the resolver admits uncertainty.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>LLM quorum design</summary>
+      <div class="annot-body">
+        <p>When invoked, 2-3 LLM providers are called in parallel with identical prompts containing the normalized evidence, parsed market rules, and reconciliation output. The models independently return p1/p2/p3/p4/unclear + reasoning.</p>
+        <p style="margin-top:8px;">Quorum rules:</p>
+        <ul style="padding-left:16px;">
+          <li>Unanimous → adopt the recommendation</li>
+          <li>Majority (2 of 3) → adopt with reduced confidence</li>
+          <li>Split or no consensus → unclear</li>
+        </ul>
+        <p style="margin-top:8px;">Provider abstraction in <code>src/models/providers.py</code> supports OpenAI, Anthropic, and others via a common interface.</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- ═══ Stage: Output Formatting ═══ -->
+  <div class="stage-detail" id="detail-output">
+    <h2>Output Formatting</h2>
+    <div class="module">src/output/formatter.py</div>
+
+    <div class="section">
+      <h3>Output structure per case</h3>
+      <table class="gate-table">
+        <tr><th>Field</th><th>Description</th></tr>
+        <tr><td><code>case_id</code></td><td>Matches input case_id</td></tr>
+        <tr><td><code>recommendation</code></td><td><code>p1</code> | <code>p2</code> | <code>p3</code> | <code>p4</code> | <code>unclear</code></td></tr>
+        <tr><td><code>confidence</code></td><td>0.0 – 1.0</td></tr>
+        <tr><td><code>evidence</code></td><td>Normalized observation: station, date, value, unit</td></tr>
+        <tr><td><code>source_trace</code></td><td>URL, HTTP status, retrieval path, timestamp, latency, errors</td></tr>
+        <tr><td><code>reasoning</code></td><td>Concise explanation tied to market rules</td></tr>
+        <tr><td><code>review_reason</code></td><td>Why the case should remain unclear or require human review (or null)</td></tr>
+      </table>
+    </div>
+
+    <details class="annotation">
+      <summary>Output modes: results.json and live snapshots</summary>
+      <div class="annot-body">
+        <p>Replay and live modes both write <code>output/results.json</code>. In live mode, raw source snapshots are additionally saved to <code>data/fixtures/</code> so future replay runs can reproduce the same decisions deterministically. This closes the loop between live retrieval and replay grading.</p>
+      </div>
+    </details>
+  </div>
+
+</main>
+
+</div><!-- /top -->
+
+<!-- ═══════════ BOTTOM PANEL: Observability Trace ═══════════ -->
+<div class="obs-panel">
+  <div class="obs-header">
+    <span class="obs-dot"></span>
+    <span>Observability Trace</span>
+    <small>— each stage logs its telemetry as the pipeline runs</small>
+  </div>
+  <div class="obs-body" id="obs-body">
+  </div>
+</div>
+
+<script>
+// ── Design spec (edit this JSON to iterate on the pipeline design) ──
+const PIPELINE = [
+  {
+    id: "input",
+    label: "Input & Validation",
+    sub: "markets.json → structured cases",
+    trace: [
+      ["tl-ts","[12:00:01.032]"],[""," "],["tl-stage","validation"],
+      ["","  loaded markets.json → 5 cases found"]
+    ]
+  },
+  {
+    id: "spec",
+    label: "Compose Retrieval Spec",
+    sub: "ancillary_data + title → RetrievalSpec + guardrails",
+    trace: [
+      ["tl-ts","[12:00:01.064]"],[""," "],["tl-stage","spec"],
+      ["","  "],["tl-data","LLM extraction: ancillary_data + title → RetrievalSpec fields"],
+      ["tl-ts","[12:00:01.072]"],[""," "],["tl-stage","spec"],
+      ["","  schema_validation: all fields present, types correct, URL syntactically valid → passed"],
+      ["tl-ts","[12:00:01.078]"],[""," "],["tl-stage","spec"],
+      ["","  station_registry: RJTT → timezone=Asia/Tokyo, country=jp, region=tokyo"],
+      ["tl-ts","[12:00:01.089]"],[""," "],["tl-stage","spec"],
+      ["","  RetrievalSpec(station=RJTT, window=[2026-06-01T00:00, 2026-06-01T23:59]+09:00, measurement=temperature, aggregation=min, unit=C, precision=1, timezone=Asia/Tokyo, finality_after=2026-06-02T00:00+09:00, source_type=wunderground_station)"],
+      ["tl-ts","[12:00:01.095]"],[""," "],["tl-stage","spec"],
+      ["","  "],["tl-data","guardrails: [verify_response_unit: 'RJTT returns °C regardless of ?units= param'], [retry_backoff: 3×5s before Playwright fallback]"],
+      ["tl-ts","[12:00:01.098]"],[""," "],["tl-stage","spec"],
+      ["","  cross-validation: date=2026-06-01 == end_date_iso ✓, unit=C matches title '°C' ✓, measurement=temperature ✓, aggregation=min matches title 'lowest' ✓"]
+    ]
+  },
+  {
+    id: "retrieval",
+    label: "Retrieval",
+    sub: "fixture or live fetch with fallback",
+    trace: [
+      ["tl-ts","[12:00:01.142]"],[""," "],["tl-stage","retrieval"],
+      ["","  "],["tl-data","GET https://www.wunderground.com/history/daily/jp/tokyo/RJTT/date/2026-06-01 → 200 OK (234ms)"],
+      ["","  path=api, bytes=1842"]
+    ]
+  },
+  {
+    id: "normalization",
+    label: "Normalization",
+    sub: "units, precision, timezone, quality",
+    trace: [
+      ["tl-ts","[12:00:01.389]"],[""," "],["tl-stage","normalization"],
+      ["","  raw=18°C → normalized=18°C (no conversion needed), precision=1, tz=Asia/Tokyo"],
+      ["","  quality_check: daily_low present, 24 hourly observations, no gaps"]
+    ]
+  },
+  {
+    id: "reconciliation",
+    label: "Reconciliation",
+    sub: "finality gate → compare to rules",
+    trace: [
+      ["tl-ts","[12:00:01.451]"],[""," "],["tl-stage","reconciliation"],
+      ["","  rule_parser: \"be 20°C\" → operator=exact, threshold=20"],
+      ["tl-ts","[12:00:01.452]"],[""," "],["tl-stage","reconciliation"],
+      ["","  "],["tl-gate","finality_gate: next-day datapoint found (2026-06-02 00:30 JST) → passed"],
+      ["tl-ts","[12:00:01.453]"],[""," "],["tl-stage","reconciliation"],
+      ["","  comparator: observed=18, operator=exact, threshold=20 → 18 ≠ 20 → verdict=No"]
+    ]
+  },
+  {
+    id: "decision",
+    label: "Decision",
+    sub: "rule-based or LLM quorum",
+    trace: [
+      ["tl-ts","[12:00:01.510]"],[""," "],["tl-stage","decision"],
+      ["","  rule_based: verdict=No → recommendation=p1, confidence=0.95"]
+    ]
+  },
+  {
+    id: "output",
+    label: "Output Formatting",
+    sub: "structured JSON per case",
+    trace: [
+      ["tl-ts","[12:00:01.567]"],[""," "],["tl-stage","output"],
+      ["","  formatted result → {\"case_id\":\"tokyo_low_2026_06_01_20c\",\"recommendation\":\"p1\",...}"],
+      ["","  appended to results array (1/5)"]
+    ]
+  }
+];
+
+// ── Build stepper from PIPELINE ──
+const stepper = document.getElementById('stepper');
+const obsBody = document.getElementById('obs-body');
+const main = document.getElementById('main');
+const details = document.querySelectorAll('.stage-detail');
+
+PIPELINE.forEach((s, i) => {
+  const li = document.createElement('li');
+  li.dataset.stage = s.id;
+  li.innerHTML = `<span class="step-num">${i + 1}</span>
+    <span class="step-label">${s.label}</span>
+    <span class="step-sub">${s.sub}</span>
+    ${i < PIPELINE.length - 1 ? '<span class="connector"></span>' : ''}`;
+  stepper.appendChild(li);
+});
+
+// ── Traverse PIPELINE up to selected index, render traces ──
+function selectStage(idx) {
+  // Highlight stepper: all up-to-idx get green, idx gets blue
+  stepper.querySelectorAll('li').forEach((li, i) => {
+    li.classList.remove('active', 'visited');
+    if (i < idx) li.classList.add('visited');
+    if (i === idx) li.classList.add('active');
+  });
+
+  // Show detail panel
+  details.forEach(d => d.classList.remove('visible'));
+  const target = document.getElementById('detail-' + PIPELINE[idx].id);
+  if (target) target.classList.add('visible');
+
+  // Render trace: all stages 0..idx
+  obsBody.innerHTML = '';
+  for (let i = 0; i <= idx; i++) {
+    const div = document.createElement('div');
+    div.className = 'trace-line';
+    div.innerHTML = PIPELINE[i].trace.map(([cls, text]) =>
+      cls ? `<span class="${cls}">${text}</span>` : text
+    ).join('');
+    obsBody.appendChild(div);
+  }
+  obsBody.scrollTop = obsBody.scrollHeight;
+  main.scrollTop = 0;
+}
+
+// ── Click handler ──
+stepper.addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-stage]');
+  if (!li) return;
+  const idx = PIPELINE.findIndex(s => s.id === li.dataset.stage);
+  if (idx >= 0) selectStage(idx);
+});
+
+// ── Start at first stage ──
+selectStage(0);
+</script>
+
+</body>
+</html>

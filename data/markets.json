@@ -1,0 +1,131 @@
+{
+  "schema_version": "otb-weather-case-v1",
+  "generated_at": "2026-06-01T00:00:00Z",
+  "description": "Sample weather market inputs for the OTB research-agent hiring case study. This file intentionally includes real OTB market identifiers and full ancillary_data, but does not include gold answers.",
+  "market_selection": {
+    "project": "OTB Polymarket weather markets",
+    "selection_notes": "Recent Wunderground-backed Weather markets processed on 2026-06-01 UTC, plus one May 31 Denver Wunderground market. These examples emphasize station-specific resolution, whole-degree precision, and next-day finality rules."
+  },
+  "markets": [
+    {
+      "case_id": "tokyo_low_2026_06_01_20c",
+      "polymarket_url": "https://polymarket.com/event/lowest-temperature-in-tokyo-on-june-1-2026",
+      "proposal_tx_hash": "0x59460aab91d57412308e194816f24939726baa831990fa225d64ef1e23689b18",
+      "question_data": {
+        "question_id": "0xcb8828e277c11f54e623dd910c867f37d52bffbd3fe4a8910303ad53d22c0c77",
+        "market_id": "2391835",
+        "market_slug": "lowest-temperature-in-tokyo-on-june-1-2026-20c",
+        "gamma_slug": "lowest-temperature-in-tokyo-on-june-1-2026",
+        "title": "Will the lowest temperature in Tokyo be 20°C on June 1?",
+        "proposal_time": "2026-06-01T15:06:18Z",
+        "processed_time": "2026-06-01T15:07:44Z",
+        "end_date_iso": "2026-06-01T00:00:00Z",
+        "resolution_conditions": "p1: No. p2: Yes. p3: 50/50 outcome. p4: Too Early.",
+        "proposed_outcome": "p2",
+        "outcomes": {
+          "p1": "No",
+          "p2": "Yes",
+          "p3": "50/50 outcome",
+          "p4": "Too Early"
+        }
+      },
+      "ancillary_data": "q: title: Will the lowest temperature in Tokyo be 20°C on June 1?, description: This market will resolve to the temperature range that contains the lowest temperature recorded at the Tokyo Haneda Airport Station in degrees Celsius on 1 Jun '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the lowest temperature recorded for all times on this day for the Tokyo Haneda Airport Station, available here: https://www.wunderground.com/history/daily/jp/tokyo/RJTT.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Celsius (eg, 9°C). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered. market_id: 2391835 res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown. This request MUST only resolve to p1 or p2.  Updates made by the question creator via the bulletin board at 0x69c47De9D4D3Dad79590d61b9e05918E03775f24 should be considered.,initializer:f43d55f3a8b7484ed4b6931f93cb6f9ef5dd369d"
+    },
+    {
+      "case_id": "tokyo_high_2026_06_01_29c_or_higher",
+      "polymarket_url": "https://polymarket.com/event/highest-temperature-in-tokyo-on-june-1-2026",
+      "proposal_tx_hash": "0xd526c9234927433eb7e277b5635686d0954647d191bdda4cc53bb869ee29646a",
+      "question_data": {
+        "question_id": "0x1ac86b8dedb12bf9c9f6aa1b83a22e8b5b454eef2f7deda751a17a239ea1be56",
+        "market_id": "2391356",
+        "market_slug": "highest-temperature-in-tokyo-on-june-1-2026-29corhigher",
+        "gamma_slug": "highest-temperature-in-tokyo-on-june-1-2026",
+        "title": "Will the highest temperature in Tokyo be 29°C or higher on June 1?",
+        "proposal_time": "2026-06-01T15:06:18Z",
+        "processed_time": "2026-06-01T15:07:17Z",
+        "end_date_iso": "2026-06-01T00:00:00Z",
+        "resolution_conditions": "p1: No. p2: Yes. p3: 50/50 outcome. p4: Too Early.",
+        "proposed_outcome": "p2",
+        "outcomes": {
+          "p1": "No",
+          "p2": "Yes",
+          "p3": "50/50 outcome",
+          "p4": "Too Early"
+        }
+      },
+      "ancillary_data": "q: title: Will the highest temperature in Tokyo be 29°C or higher on June 1?, description: This market will resolve to the temperature range that contains the highest temperature recorded at the Tokyo Haneda Airport Station in degrees Celsius on 1 Jun '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the highest temperature recorded for all times on this day for the Tokyo Haneda Airport Station, available here: https://www.wunderground.com/history/daily/jp/tokyo/RJTT.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Celsius (eg, 9°C). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered. market_id: 2391356 res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown. This request MUST only resolve to p1 or p2.  Updates made by the question creator via the bulletin board at 0x69c47De9D4D3Dad79590d61b9e05918E03775f24 should be considered.,initializer:f43d55f3a8b7484ed4b6931f93cb6f9ef5dd369d"
+    },
+    {
+      "case_id": "busan_high_2026_06_01_22c_or_below",
+      "polymarket_url": "https://polymarket.com/event/highest-temperature-in-busan-on-june-1-2026",
+      "proposal_tx_hash": "0x424f8db0b294b2c758596d2f9ae626e92cc945cbfcbd0ae5edcb938b65467304",
+      "question_data": {
+        "question_id": "0x27eced60d08d6bb5cf841d856f41acca587bfd2dbe798e8dffb665dde3d789b9",
+        "market_id": "2391577",
+        "market_slug": "highest-temperature-in-busan-on-june-1-2026-22corbelow",
+        "gamma_slug": "highest-temperature-in-busan-on-june-1-2026",
+        "title": "Will the highest temperature in Busan be 22°C or below on June 1?",
+        "proposal_time": "2026-06-01T15:04:39Z",
+        "processed_time": "2026-06-01T15:06:10Z",
+        "end_date_iso": "2026-06-01T00:00:00Z",
+        "resolution_conditions": "p1: No. p2: Yes. p3: 50/50 outcome. p4: Too Early.",
+        "proposed_outcome": "p1",
+        "outcomes": {
+          "p1": "No",
+          "p2": "Yes",
+          "p3": "50/50 outcome",
+          "p4": "Too Early"
+        }
+      },
+      "ancillary_data": "q: title: Will the highest temperature in Busan be 22°C or below on June 1?, description: This market will resolve to the temperature range that contains the highest temperature recorded at the Gimhae Intl Airport Station in degrees Celsius on 1 Jun '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the highest temperature recorded for all times on this day for the Gimhae Intl Airport Station, available here: https://www.wunderground.com/history/daily/kr/busan/RKPK.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Celsius (eg, 9°C). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered. market_id: 2391577 res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown. This request MUST only resolve to p1 or p2.  Updates made by the question creator via the bulletin board at 0x69c47De9D4D3Dad79590d61b9e05918E03775f24 should be considered.,initializer:f43d55f3a8b7484ed4b6931f93cb6f9ef5dd369d"
+    },
+    {
+      "case_id": "seoul_low_2026_06_01_16c",
+      "polymarket_url": "https://polymarket.com/event/lowest-temperature-in-seoul-on-june-1-2026",
+      "proposal_tx_hash": "0x8a3bb44d98c3df78148c771ab3c4f492072a3cc898d7d2dced59e6511f5440b6",
+      "question_data": {
+        "question_id": "0x9c77df8e5857b3f142f604d7cd8f7a1596243f87e2ff567233317eebfc737778",
+        "market_id": "2391800",
+        "market_slug": "lowest-temperature-in-seoul-on-june-1-2026-16c",
+        "gamma_slug": "lowest-temperature-in-seoul-on-june-1-2026",
+        "title": "Will the lowest temperature in Seoul be 16°C on June 1?",
+        "proposal_time": "2026-06-01T15:00:32Z",
+        "processed_time": "2026-06-01T15:03:05Z",
+        "end_date_iso": "2026-06-01T00:00:00Z",
+        "resolution_conditions": "p1: No. p2: Yes. p3: 50/50 outcome. p4: Too Early.",
+        "proposed_outcome": "p2",
+        "outcomes": {
+          "p1": "No",
+          "p2": "Yes",
+          "p3": "50/50 outcome",
+          "p4": "Too Early"
+        }
+      },
+      "ancillary_data": "q: title: Will the lowest temperature in Seoul be 16°C on June 1?, description: This market will resolve to the temperature range that contains the lowest temperature recorded at the Incheon Intl Airport Station in degrees Celsius on 1 Jun '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the lowest temperature recorded for all times on this day for the Incheon Intl Airport Station, available here: https://www.wunderground.com/history/daily/kr/incheon/RKSI.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Celsius (eg, 9°C). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered. market_id: 2391800 res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown. This request MUST only resolve to p1 or p2.  Updates made by the question creator via the bulletin board at 0x69c47De9D4D3Dad79590d61b9e05918E03775f24 should be considered.,initializer:f43d55f3a8b7484ed4b6931f93cb6f9ef5dd369d"
+    },
+    {
+      "case_id": "denver_high_2026_05_31_68_69f",
+      "polymarket_url": "https://polymarket.com/event/highest-temperature-in-denver-on-may-31-2026",
+      "proposal_tx_hash": "0x5414d8b45171e1d3911bcb0f94481ee7e6dc0fbddb617ee206baffbbfb8a2628",
+      "question_data": {
+        "question_id": "0x0163ee1b3c99cb01227ce73bd4edff48570d1d747b289e93ff30d74f1b194dba",
+        "market_id": "2383955",
+        "market_slug": "highest-temperature-in-denver-on-may-31-2026-68-69f",
+        "gamma_slug": "highest-temperature-in-denver-on-may-31-2026",
+        "title": "Will the highest temperature in Denver be between 68-69°F on May 31?",
+        "proposal_time": "2026-06-01T09:05:17Z",
+        "processed_time": "2026-06-01T09:07:03Z",
+        "end_date_iso": "2026-05-31T00:00:00Z",
+        "resolution_conditions": "p1: No. p2: Yes. p3: 50/50 outcome. p4: Too Early.",
+        "proposed_outcome": "p1",
+        "outcomes": {
+          "p1": "No",
+          "p2": "Yes",
+          "p3": "50/50 outcome",
+          "p4": "Too Early"
+        }
+      },
+      "ancillary_data": "q: title: Will the highest temperature in Denver be between 68-69°F on May 31?, description: This market will resolve to the temperature range that contains the highest temperature recorded at the Buckley Space Force Base Station in degrees Fahrenheit on 31 May '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the highest temperature recorded for all times on this day for the Buckley Space Force Base Station, available here: https://www.wunderground.com/history/daily/us/co/aurora/KBKF.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Fahrenheit (eg, 21°F). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered. market_id: 2383955 res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown. This request MUST only resolve to p1 or p2.  Updates made by the question creator via the bulletin board at 0x69c47De9D4D3Dad79590d61b9e05918E03775f24 should be considered.,initializer:f43d55f3a8b7484ed4b6931f93cb6f9ef5dd369d"
+    }
+  ]
+}
