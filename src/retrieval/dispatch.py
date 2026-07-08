@@ -15,6 +15,7 @@ Field mapping table: measurement + aggregation → API field name + aggregation 
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -237,10 +238,11 @@ def retrieve_observations(
         return _retrieve_replay(spec, fixtures_dir, fixture_path_override)
 
     # ── Live mode: dispatch by source_type ──
+    batch: RawObservationBatch
     if spec.source_type == "wunderground_station":
-        return _retrieve_wunderground(spec, api_key)
+        batch = _retrieve_wunderground(spec, api_key)
     elif spec.source_type == "noaa_monthly":
-        return _retrieve_noaa(spec)
+        batch = _retrieve_noaa(spec)
     else:
         raise RetrievalError(
             case_id="(unknown)",
@@ -248,6 +250,11 @@ def retrieve_observations(
             detail=f"Unrecognized source type '{spec.source_type}'; "
                    f"expected one of: wunderground_station, noaa_monthly",
         )
+
+    # ── Automatically save fixture for future replay ──
+    _save_fixture(batch, spec, Path(fixtures_dir))
+
+    return batch
 
 
 # ── Internal dispatch helpers ──────────────────────────────────────────
@@ -389,3 +396,89 @@ def _retrieve_noaa(spec: RetrievalSpec) -> RawObservationBatch:
             reason="retrieval_exhausted",
             detail=f"NOAA retrieval failed: {e.message}. No fallback path exists.",
         ) from e
+
+
+# ── Fixture persistence ─────────────────────────────────────────────────
+
+def _save_fixture(batch: RawObservationBatch, spec: RetrievalSpec, fixtures_dir: Path) -> None:
+    """Save a retrieved batch as a fixture file for future replay.
+
+    Live mode always records its snapshots so that replay runs can
+    reproduce the same decisions deterministically.
+
+    The fixture is saved as {fixtures_dir}/{station_code}_{YYYYMMDD}_{measurement}_{aggregation}.json
+
+    Args:
+        batch: The retrieved observation batch.
+        spec: The RetrievalSpec used for retrieval.
+        fixtures_dir: Directory to save fixtures into.
+    """
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build a consistent fixture name from spec fields
+    window_str = spec.target_window.start.strftime("%Y%m%d")
+    fixture_name = (
+        f"{spec.station_code}_{window_str}_"
+        f"{spec.measurement}_{spec.aggregation}.json"
+    )
+    fixture_path = fixtures_dir / fixture_name
+
+    # Serialize RawObservationBatch to JSON
+    fixture_data = _batch_to_dict(batch)
+
+    with open(fixture_path, "w", encoding="utf-8") as f:
+        json.dump(fixture_data, f, indent=2, default=str)
+
+    logger.info("Saved fixture to %s (%d observations)",
+                fixture_path, len(batch.observations))
+
+
+def _batch_to_dict(batch: RawObservationBatch) -> dict[str, Any]:
+    """Serialize a RawObservationBatch to a JSON-serializable dict."""
+    # Serialize observations — epoch timestamps stay as ints
+    obs_list: list[dict[str, Any]] = []
+    for obs in batch.observations:
+        obs_copy = dict(obs)
+        # Convert any datetime values to isoformat strings
+        for key, val in obs_copy.items():
+            if isinstance(val, datetime):
+                obs_copy[key] = val.isoformat()
+        obs_list.append(obs_copy)
+
+    # Serialize extracted value
+    ev = batch.extracted_value
+    ev_dict: dict[str, Any] = {
+        "value": ev.value,
+        "unit": ev.unit,
+        "field": ev.field,
+        "aggregation": ev.aggregation,
+    }
+
+    # Serialize finality
+    fin = batch.finality
+    fin_dict: dict[str, Any] = {
+        "status": fin.status,
+        "first_next_day_ts": fin.first_next_day_ts,
+    }
+
+    # Serialize source trace
+    trace_list: list[dict[str, Any]] = []
+    for entry in batch.source_trace:
+        trace_list.append({
+            "url": entry.url,
+            "http_status": entry.http_status,
+            "response_size_bytes": entry.response_size_bytes,
+            "latency_ms": entry.latency_ms,
+            "path": entry.path,
+            "retry_count": entry.retry_count,
+            "guardrail_flags": entry.guardrail_flags,
+            "error": entry.error,
+            "timestamp": entry.timestamp,
+        })
+
+    return {
+        "observations": obs_list,
+        "extracted_value": ev_dict,
+        "finality": fin_dict,
+        "source_trace": trace_list,
+    }
