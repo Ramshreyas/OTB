@@ -15,6 +15,9 @@ build/
 .coverage
 htmlcov/
 
+# Fixtures (captured data snapshots)
+data/fixtures/
+
 # IDE
 .idea/
 .vscode/
