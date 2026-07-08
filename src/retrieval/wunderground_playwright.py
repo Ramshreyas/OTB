@@ -33,6 +33,19 @@ from .dispatch import (
 logger = logging.getLogger(__name__)
 
 
+# Consent dialog selectors for Sourcepoint CMP used by Wunderground.
+# The dialog appears as an iframe (#sp_message_iframe_1225696) with
+# Reject All / Accept All buttons inside it.
+_CONSENT_IFRAME_ID = "sp_message_iframe_1225696"
+_CONSENT_REJECT_SELECTORS = [
+    "button.sp_choice_type_13",       # Sourcepoint Reject All (first layer)
+    "button[title='Reject All']",
+    "button:has-text('Reject All')",
+    "button.sp_choice_type_REJECT_ALL",  # GDPR TCF variant
+    "button[aria-label='Reject All']",
+]
+
+
 class PlaywrightError(Exception):
     """Raised when Playwright retrieval fails."""
 
@@ -57,6 +70,69 @@ def _get_playwright_browser():
     return pw, browser
 
 
+def _dismiss_consent_dialog(page) -> bool:
+    """Dismiss the Sourcepoint cookie consent dialog if present.
+
+    Wunderground uses a Sourcepoint CMP iframe overlay
+    (#sp_message_iframe_1225696) that blocks pointer events on the
+    underlying page. This function attempts to click the Reject All
+    button inside the iframe to dismiss it.
+
+    Args:
+        page: Playwright Page object after navigation.
+
+    Returns:
+        True if the consent dialog was successfully dismissed, False otherwise.
+    """
+    try:
+        # Wait briefly for the consent iframe to appear
+        page.wait_for_timeout(2000)
+
+        # Try to locate the consent iframe
+        consent_frame = page.frame_locator(f"#{_CONSENT_IFRAME_ID}")
+        if not consent_frame:
+            logger.debug("No consent iframe found — nothing to dismiss.")
+            return False
+
+        # Try each Reject All selector until one clicks successfully
+        for selector in _CONSENT_REJECT_SELECTORS:
+            try:
+                btn = consent_frame.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    btn.click(timeout=5000)
+                    page.wait_for_timeout(1000)
+                    logger.info("Dismissed consent dialog via %s", selector)
+                    return True
+            except Exception:
+                continue
+
+        # Fallback: try the Accept All button as a last resort
+        # (better to accept cookies than have the overlay block everything)
+        accept_selectors = [
+            "button.sp_choice_type_11",  # Sourcepoint Accept All
+            "button:has-text('Accept All')",
+            "button[title='Accept All']",
+            "button.sp_choice_type_ACCEPT_ALL",
+        ]
+        for selector in accept_selectors:
+            try:
+                btn = consent_frame.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    btn.click(timeout=5000)
+                    page.wait_for_timeout(1000)
+                    logger.info("Dismissed consent dialog via Accept All: %s", selector)
+                    return True
+            except Exception:
+                continue
+
+        logger.debug("Consent iframe found but no clickable button located.")
+        return False
+
+    except Exception as e:
+        logger.debug("Consent dialog dismissal skipped: %s", e)
+        return False
+
+
 def _scrape_observation_rows(page) -> list[dict[str, Any]]:
     """Scrape observation rows from the Wunderground history page table.
 
@@ -72,60 +148,62 @@ def _scrape_observation_rows(page) -> list[dict[str, Any]]:
         valid_time_gmt (epoch seconds), temp, wspd, gust, precip_total,
         rh, vis, pressure, dewPt.
     """
-    # Wait for the observations table to appear
-    page.wait_for_selector(".observation-table, .history-table, mat-table, "
+    # Wait for the observations table to appear (Angular Material 15+ uses mat-mdc-table)
+    page.wait_for_selector(".observation-table, .history-table, .mat-mdc-table, "
                            ".mat-table, table.history", timeout=15000)
 
     # Extract observations using page.evaluate
+    # Wunderground uses Angular Material (mat-mdc-table with cdk-column-* classes).
+    # Rows have class mat-mdc-row (v15+) or mat-row (v14 and earlier).
     observations = page.evaluate("""() => {
         const rows = document.querySelectorAll(
-            '.mat-table tr.mat-row, table.history tr, .ng-star-inserted tr[role="row"]'
+            '.mat-mdc-row[role="row"], .mat-row[role="row"], ' +
+            'table.history tr, .ng-star-inserted tr[role="row"]'
         );
         const results = [];
 
         rows.forEach(row => {
             const cells = row.querySelectorAll('td, th');
-            if (cells.length < 5) return;  // skip header/empty rows
+            if (cells.length < 5) return;  // skip header/empty/footer rows
 
             const rowData = {};
-            let colIndex = 0;
 
             cells.forEach(cell => {
                 const text = (cell.textContent || '').trim();
-                const header = cell.getAttribute('data-column') ||
-                               cell.getAttribute('ng-reflect-name') || '';
+                const cls = (cell.className || '');
 
-                // Map by column position or header name
-                if (header.includes('time') || colIndex === 0) {
-                    // Try to parse time
-                    const timeMatch = text.match(/(\\d{1,2}):(\\d{2})/);
-                    if (timeMatch) {
-                        rowData._time_str = text;
-                    }
-                } else if (header.includes('temp') || text.match(/^-?\\d+\\.?\\d*\\s*[°CF]/)) {
+                // Column detection via cdk-column-* class (Angular Material 15+)
+                // or data-column / ng-reflect-name attributes (older versions)
+                const colMatch = cls.match(/cdk-column-(\\w+)/);
+                const colName = colMatch ? colMatch[1] : '';
+
+                if (colName.includes('date') || colName.includes('time')) {
+                    rowData._time_str = text;
+                } else if (colName.includes('temp') && !colName.includes('dew')) {
                     const numMatch = text.match(/(-?\\d+\\.?\\d*)/);
                     if (numMatch) rowData.temp = parseFloat(numMatch[1]);
-                } else if (header.includes('wind') || header.includes('speed')) {
+                } else if (colName.includes('dew')) {
+                    const numMatch = text.match(/(-?\\d+\\.?\\d*)/);
+                    if (numMatch) rowData.dewPt = parseFloat(numMatch[1]);
+                } else if (colName.includes('windSpeed') || colName.includes('wspd')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.wspd = parseFloat(numMatch[1]);
-                } else if (header.includes('gust')) {
+                } else if (colName.includes('windGust') || colName.includes('gust')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.gust = parseFloat(numMatch[1]);
-                } else if (header.includes('precip') || header.includes('rain')) {
+                } else if (colName.includes('precip')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.precip_total = parseFloat(numMatch[1]);
-                } else if (header.includes('humid')) {
+                } else if (colName.includes('humid')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.rh = parseFloat(numMatch[1]);
-                } else if (header.includes('visib')) {
+                } else if (colName.includes('visib')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.vis = parseFloat(numMatch[1]);
-                } else if (header.includes('pressure') || header.includes('bar')) {
+                } else if (colName.includes('pressure')) {
                     const numMatch = text.match(/(\\d+\\.?\\d*)/);
                     if (numMatch) rowData.pressure = parseFloat(numMatch[1]);
                 }
-
-                colIndex++;
             });
 
             if (rowData.temp !== undefined || rowData._time_str) {
@@ -327,6 +405,11 @@ def fetch_wunderground_playwright(
         nav_start = time.time()
         page.goto(page_url, wait_until="networkidle", timeout=30000)
         nav_ms = (time.time() - nav_start) * 1000
+
+        # Dismiss cookie consent popup before interacting with the page.
+        # Wunderground uses Sourcepoint CMP which blocks pointer events
+        # via an iframe overlay if not dismissed.
+        _dismiss_consent_dialog(page)
 
         # Toggle unit if needed
         _toggle_unit_setting(page, unit)

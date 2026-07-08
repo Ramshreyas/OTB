@@ -463,30 +463,30 @@ class TestWundergroundHelpers:
     """Tests for internal Wunderground API helper functions."""
 
     @pytest.mark.parametrize("url,expected", [
-        ("https://www.wunderground.com/history/daily/jp/tokyo/RJTT", "jp"),
-        ("https://www.wunderground.com/history/daily/kr/incheon/RKSI", "kr"),
-        ("https://www.wunderground.com/history/daily/us/co/aurora/KBKF", "us"),
-        ("https://www.wunderground.com/history/daily/nz/wellington/NZWN", "nz"),
+        ("https://www.wunderground.com/history/daily/jp/tokyo/RJTT", "JP"),
+        ("https://www.wunderground.com/history/daily/kr/incheon/RKSI", "KR"),
+        ("https://www.wunderground.com/history/daily/us/co/aurora/KBKF", "US"),
+        ("https://www.wunderground.com/history/daily/nz/wellington/NZWN", "NZ"),
     ])
     def test_extract_country_code_from_url(self, url, expected):
         assert _extract_country_code_from_url(url) == expected
 
     def test_extract_country_code_from_unknown_url(self):
-        assert _extract_country_code_from_url("https://example.com/weather") == "xx"
+        assert _extract_country_code_from_url("https://example.com/weather") == "XX"
 
     @pytest.mark.parametrize("icao,expected", [
-        ("RJTT", "jp"),
-        ("RKSI", "kr"),
-        ("RKPK", "kr"),
-        ("NZWN", "nz"),
-        ("KBKF", "us"),
-        ("KSEA", "us"),
+        ("RJTT", "JP"),
+        ("RKSI", "KR"),
+        ("RKPK", "KR"),
+        ("NZWN", "NZ"),
+        ("KBKF", "US"),
+        ("KSEA", "US"),
     ])
     def test_extract_country_code_from_icao(self, icao, expected):
         assert _extract_country_code_from_icao(icao) == expected
 
     def test_extract_country_code_unknown_icao(self):
-        assert _extract_country_code_from_icao("XXXX") == "xx"
+        assert _extract_country_code_from_icao("XXXX") == "XX"
 
     def test_format_date_for_api(self):
         dt = datetime(2026, 6, 1)
@@ -497,9 +497,9 @@ class TestWundergroundHelpers:
         assert _format_date_for_api(dt) == "20260531"
 
     def test_build_api_url(self):
-        url = _build_api_url("RJTT", "jp", "20260601", "20260601", "m", "test_key")
+        url = _build_api_url("RJTT", "JP", "20260601", "20260601", "m", "test_key")
         assert "api.weather.com" in url
-        assert "RJTT" in url
+        assert "RJTT:2:JP" in url  # 3-part location: ICAO:Region:CC
         assert "20260601" in url
         assert "units=m" in url
         assert "apiKey=test_key" in url

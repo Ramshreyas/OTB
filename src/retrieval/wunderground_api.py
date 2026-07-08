@@ -39,13 +39,103 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────
 
-# Wunderground internal API endpoint for historical observations
+# Wunderground internal API endpoint for historical observations.
+# The location format is ICAO:WMO_REGION:CC (3-part), e.g. RJTT:2:JP
 _WU_OBSERVATIONS_URL = (
-    "https://api.weather.com/v1/location/{icao}:{cc}/observations/historical.json"
+    "https://api.weather.com/v1/location/{icao}:{wmo_region}:{cc}/observations/historical.json"
 )
 
+# WMO region codes mapped by ICAO prefix or country code.
+# Region 1: Africa, 2: Asia, 3: South America, 4: North America,
+# 5: Southwest Pacific, 6: Europe, 7: Antarctica.
+_WMO_REGION_MAP: dict[str, str] = {
+    # Asia (Region 2)
+    "RJ": "2",  # Japan
+    "RO": "2",  # Japan (Okinawa)
+    "RK": "2",  # South Korea
+    "RP": "2",  # Philippines
+    "RC": "2",  # Taiwan
+    "VT": "2",  # Thailand
+    "VV": "2",  # Vietnam
+    "WM": "2",  # Malaysia
+    "WS": "2",  # Singapore
+    "WI": "2",  # Indonesia
+    "ZB": "2",  # China
+    "ZU": "2",  # China
+    "ZL": "2",  # China
+    "ZP": "2",  # China
+    "ZG": "2",  # China
+    "ZH": "2",  # China
+    "VH": "2",  # Hong Kong
+    "VMM": "2",  # Macau
+    "VN": "2",  # Nepal
+    "OP": "2",  # Pakistan
+    "VC": "2",  # Sri Lanka
+    "VE": "2",  # India
+    "VI": "2",  # India
+    "VO": "2",  # India
+    "VG": "2",  # Bangladesh
+    # North America (Region 4)
+    "K": "4",   # Continental US
+    "PA": "4",  # Alaska
+    "PH": "4",  # Hawaii
+    "C": "4",   # Canada
+    "CY": "4",  # Canada
+    "CZ": "4",  # Canada
+    "MM": "4",  # Mexico
+    # Southwest Pacific (Region 5)
+    "NZ": "5",  # New Zealand
+    "Y": "5",   # Australia
+    "NS": "5",  # Samoa
+    "NF": "5",  # Fiji
+    "NW": "5",  # New Caledonia
+    # Europe (Region 6)
+    "EG": "6",  # UK
+    "EI": "6",  # Ireland
+    "LF": "6",  # France
+    "LE": "6",  # Spain
+    "LP": "6",  # Portugal
+    "ED": "6",  # Germany
+    "ET": "6",  # Germany
+    "LS": "6",  # Switzerland
+    "LI": "6",  # Italy
+    "LO": "6",  # Austria
+    "EB": "6",  # Belgium
+    "EH": "6",  # Netherlands
+    "EK": "6",  # Denmark
+    "ES": "6",  # Sweden
+    "EN": "6",  # Norway
+    "EF": "6",  # Finland
+    "EP": "6",  # Poland
+    "LK": "6",  # Czech Republic
+    "LZ": "6",  # Slovakia
+    "LH": "6",  # Hungary
+    "LR": "6",  # Romania
+    "LB": "6",  # Bulgaria
+    "LG": "6",  # Greece
+    "LT": "6",  # Turkey
+    "UU": "6",  # Russia (west)
+    "UL": "6",  # Russia (west)
+    "UM": "6",  # Belarus
+    "UK": "6",  # Ukraine
+    # South America (Region 3)
+    "SB": "3",  # Brazil
+    "SA": "3",  # Argentina
+    "SC": "3",  # Chile
+    "SK": "3",  # Colombia
+    "SP": "3",  # Peru
+    "SE": "3",  # Ecuador
+    "SV": "3",  # Venezuela
+    "SU": "3",  # Uruguay
+    "SG": "3",  # Paraguay
+    "SL": "3",  # Bolivia
+}
+
+# Default WMO region to use when ICAO prefix is not in the map
+_WMO_REGION_DEFAULT = "2"  # Default to Asia
+
 # Expected API key (passed as 'apiKey' query param)
-# The API key can be read from environment, but the endpoint is public-ish
+_DEFAULT_API_KEY = "6532d6454b8aa370768e63d6ba5a832e"
 
 # Unit mapping: C → m (metric), F → e (imperial)
 _UNIT_PARAM_MAP = {"C": "m", "F": "e"}
@@ -128,21 +218,25 @@ def _build_api_url(
 ) -> str:
     """Build the Wunderground observations API URL.
 
+    The location identifier uses the 3-part format: ICAO:WMO_REGION:CC
+    e.g., RJTT:2:JP for Tokyo Haneda, KBKF:4:US for Buckley SFB.
+
     Args:
         icao_code: ICAO airport code (e.g., "RJTT").
-        country_code: ISO country code, lowercase (e.g., "jp").
+        country_code: ISO country code, uppercase (e.g., "JP").
         start_date_str: YYYYMMDD format.
         end_date_str: YYYYMMDD format.
         unit_param: 'm' for metric/Celsius or 'e' for imperial/Fahrenheit.
-        api_key: API key (if empty, uses e1f10a1e78da46f5b10a1e78da96f525).
+        api_key: API key (if empty, uses the default key).
 
     Returns:
         Full API URL string.
     """
     if not api_key:
-        api_key = "e1f10a1e78da46f5b10a1e78da96f525"  # Public-ish key
+        api_key = _DEFAULT_API_KEY
 
-    base = f"https://api.weather.com/v1/location/{icao_code}:{country_code}/observations/historical.json"
+    wmo_region = _get_wmo_region_code(icao_code)
+    base = f"https://api.weather.com/v1/location/{icao_code}:{wmo_region}:{country_code}/observations/historical.json"
     params = {
         "apiKey": api_key,
         "units": unit_param,
@@ -155,34 +249,58 @@ def _build_api_url(
 def _extract_country_code_from_url(station_url: str) -> str:
     """Extract the two-letter country code from a Wunderground URL.
 
-    e.g., .../history/daily/jp/tokyo/RJTT → 'jp'
+    e.g., .../history/daily/jp/tokyo/RJTT → 'JP'
     """
     import re
     match = re.search(r"/history/daily/([a-z]{2})/", station_url)
     if match:
-        return match.group(1)
-    return "xx"
+        return match.group(1).upper()
+    return "XX"
 
 
 def _extract_country_code_from_icao(icao: str) -> str:
     """Infer country code from ICAO prefix.
 
-    RJ** → jp, RK** → kr, K*** → us, NZ** → nz
+    RJ** → JP, RK** → KR, K*** → US, NZ** → NZ
     """
     icao = icao.upper()
     # Two-letter prefixes for Asia-Pacific
     mapping = {
-        "RJ": "jp",
-        "RK": "kr",
-        "NZ": "nz",
+        "RJ": "JP",
+        "RK": "KR",
+        "NZ": "NZ",
     }
     prefix2 = icao[:2]
     if prefix2 in mapping:
         return mapping[prefix2]
     # Single-letter K prefix = contiguous United States (K***)
     if icao.startswith("K"):
-        return "us"
-    return "xx"
+        return "US"
+    return "XX"
+
+
+def _get_wmo_region_code(icao: str) -> str:
+    """Get the WMO region code for an ICAO station code.
+
+    Uses the two-letter prefix to determine the WMO region.
+    Falls back to single-letter prefix, then default region.
+
+    Args:
+        icao: ICAO station code (e.g., 'RJTT', 'KBKF').
+
+    Returns:
+        WMO region code as a string.
+    """
+    icao = icao.upper()
+    # Try 2-letter prefix first
+    prefix2 = icao[:2]
+    if prefix2 in _WMO_REGION_MAP:
+        return _WMO_REGION_MAP[prefix2]
+    # Try 1-letter prefix
+    prefix1 = icao[:1]
+    if prefix1 in _WMO_REGION_MAP:
+        return _WMO_REGION_MAP[prefix1]
+    return _WMO_REGION_DEFAULT
 
 
 def _format_date_for_api(dt: datetime) -> str:
@@ -418,7 +536,7 @@ def fetch_wunderground_observations(
 
     # Extract country code
     country_code = _extract_country_code_from_url(station_url)
-    if country_code == "xx":
+    if country_code == "XX":
         country_code = _extract_country_code_from_icao(station_code)
 
     # Unit param mapping
