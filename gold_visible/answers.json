@@ -1,0 +1,30 @@
+{
+  "description": "Gold answers for the 5 visible OTB weather market cases. Used by evaluate.py to measure resolver accuracy.",
+  "results": [
+    {
+      "case_id": "tokyo_low_2026_06_01_20c",
+      "recommendation": "p1",
+      "reasoning": "RJTT recorded low of 18°C on June 1, 2026. Market asked exactly 20°C. 18 ≠ 20 → No (p1)."
+    },
+    {
+      "case_id": "tokyo_high_2026_06_01_29c_or_higher",
+      "recommendation": "unclear",
+      "reasoning": "No fixture exists for RJTT high temperature on June 1. In replay mode this gates to unclear due to retrieval failure."
+    },
+    {
+      "case_id": "busan_high_2026_06_01_22c_or_below",
+      "recommendation": "unclear",
+      "reasoning": "No fixture exists for Busan Gimhae (RKPK) high temperature on June 1. In replay mode this gates to unclear."
+    },
+    {
+      "case_id": "seoul_low_2026_06_01_16c",
+      "recommendation": "unclear",
+      "reasoning": "No fixture exists for Seoul Incheon (RKSI) low temperature on June 1. In replay mode this gates to unclear."
+    },
+    {
+      "case_id": "denver_high_2026_05_31_68_69f",
+      "recommendation": "p1",
+      "reasoning": "KBKF recorded high of 72°F on May 31, 2026. Market asked between 68-69°F. 72 not in [68, 69] → No (p1)."
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+"""Output formatting — assembles final JSON from Resolution + accumulated evidence."""

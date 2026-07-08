@@ -1,0 +1,1 @@
+"""Observability — Langfuse client, structured logging, tracing helpers."""

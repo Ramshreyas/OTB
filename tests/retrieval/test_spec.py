@@ -1306,16 +1306,16 @@ class TestEnumerations:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestGeminiLLMIntegration:
-    """Integration tests using the real Gemini API.
+class TestLiteLLMIntegration:
+    """Integration tests using the LiteLLM proxy.
 
-    These require GEMINI_API_KEY set in the environment or .env file.
+    These require GEMINI_API_KEY and LITELLM_BASE_URL set in the environment.
     Skip them with: pytest -m "not integration"
     """
 
     @pytest.fixture
-    def gemini_extractor(self):
-        """Create the real Gemini extractor (skips if no API key)."""
+    def llm_extractor(self):
+        """Create the LiteLLM-based extractor (skips if not configured)."""
         import os
         from dotenv import load_dotenv
         load_dotenv()
@@ -1323,8 +1323,8 @@ class TestGeminiLLMIntegration:
         if not os.getenv("GEMINI_API_KEY"):
             pytest.skip("GEMINI_API_KEY not set")
 
-        from src.retrieval.llm_extractor import create_gemini_extractor
-        return create_gemini_extractor()
+        from src.retrieval.llm_extractor import create_litellm_extractor
+        return create_litellm_extractor()
 
     @pytest.fixture
     def all_cases(self):
@@ -1337,17 +1337,17 @@ class TestGeminiLLMIntegration:
         return list(manifest.markets)
 
     @pytest.mark.integration
-    def test_gemini_extracts_all_five_cases(self, gemini_extractor, all_cases):
-        """Gemini should successfully extract all 5 real market cases."""
+    def test_litellm_extracts_all_five_cases(self, llm_extractor, all_cases):
+        """LiteLLM should successfully extract all 5 real market cases."""
         for case in all_cases:
-            spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+            spec = compose_retrieval_spec(case, llm_extractor=llm_extractor)
             assert isinstance(spec, RetrievalSpec)
             assert spec.station_code  # non-empty
             assert spec.extraction_method == ExtractionMethod.LLM
 
     @pytest.mark.integration
-    def test_gemini_tokyo_low_fields(self, gemini_extractor):
-        """Gemini should extract correct fields for Tokyo low market."""
+    def test_litellm_tokyo_low_fields(self, llm_extractor):
+        """LiteLLM should extract correct fields for Tokyo low market."""
         case = _make_market_case(
             case_id="tokyo_low",
             title="Will the lowest temperature in Tokyo be 20°C on June 1?",
@@ -1371,7 +1371,7 @@ class TestGeminiLLMIntegration:
                 "res_data: p1: 0, p2: 1, p3: 0.5."
             ),
         )
-        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+        spec = compose_retrieval_spec(case, llm_extractor=llm_extractor)
 
         assert spec.extraction_method == ExtractionMethod.LLM
         assert spec.source_type == "wunderground_station"
@@ -1386,8 +1386,8 @@ class TestGeminiLLMIntegration:
         assert spec.finality_after.date() == datetime(2026, 6, 2).date()
 
     @pytest.mark.integration
-    def test_gemini_denver_fields(self, gemini_extractor):
-        """Gemini should extract correct fields for Denver (KBKF, Fahrenheit)."""
+    def test_litellm_denver_fields(self, llm_extractor):
+        """LiteLLM should extract correct fields for Denver (KBKF, Fahrenheit)."""
         case = _make_market_case(
             case_id="denver_high",
             title="Will the highest temperature in Denver be between 68-69°F on May 31?",
@@ -1411,7 +1411,7 @@ class TestGeminiLLMIntegration:
                 "that will be used when resolving the market."
             ),
         )
-        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+        spec = compose_retrieval_spec(case, llm_extractor=llm_extractor)
 
         assert spec.extraction_method == ExtractionMethod.LLM
         assert spec.station_code == "KBKF"
@@ -1420,8 +1420,8 @@ class TestGeminiLLMIntegration:
         assert spec.target_window.start.date() == datetime(2026, 5, 31).date()
 
     @pytest.mark.integration
-    def test_gemini_seoul_incheon_station_awareness(self, gemini_extractor):
-        """Gemini should extract RKSI for Seoul (Incheon), not a Seoul city station."""
+    def test_litellm_seoul_incheon_station_awareness(self, llm_extractor):
+        """LiteLLM should extract RKSI for Seoul (Incheon), not a Seoul city station."""
         case = _make_market_case(
             case_id="seoul_low",
             title="Will the lowest temperature in Seoul be 16°C on June 1?",
@@ -1439,7 +1439,7 @@ class TestGeminiLLMIntegration:
                 "following date has been published."
             ),
         )
-        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+        spec = compose_retrieval_spec(case, llm_extractor=llm_extractor)
 
         assert spec.extraction_method == ExtractionMethod.LLM
         assert spec.station_code == "RKSI"
@@ -1449,7 +1449,7 @@ class TestGeminiLLMIntegration:
         assert "Seoul" in spec.cross_validation.station_city_awareness_detail
 
     @pytest.mark.integration
-    def test_gemini_fallback_on_gibberish_input(self, gemini_extractor):
+    def test_litellm_fallback_on_gibberish_input(self, llm_extractor):
         """When ancillary_data is nonsense but has a valid station URL and date,
         the LLM may fail and regex fallback should keep the pipeline from
         crashing. Either LLM or regex should produce a viable spec."""
@@ -1464,7 +1464,7 @@ class TestGeminiLLMIntegration:
             ),
         )
         # This should not crash — either LLM succeeds or falls back to regex
-        spec = compose_retrieval_spec(case, llm_extractor=gemini_extractor)
+        spec = compose_retrieval_spec(case, llm_extractor=llm_extractor)
         assert isinstance(spec, RetrievalSpec)
         # The station ABCD is not in registry, falls back to UTC
         assert spec.timezone == "UTC"

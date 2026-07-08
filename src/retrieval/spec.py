@@ -129,6 +129,7 @@ def compose_retrieval_spec(
     market_case: MarketCase,
     *,
     llm_extractor: Optional[callable] = None,
+    use_litellm: bool = True,
 ) -> RetrievalSpec:
     """Compose a complete RetrievalSpec from a validated MarketCase.
 
@@ -143,8 +144,10 @@ def compose_retrieval_spec(
     Args:
         market_case: A validated, immutable MarketCase from Stage 1.
         llm_extractor: Optional callable that takes (ancillary_data: str,
-            title: str) and returns a dict of extracted fields. If None,
-            only regex extraction is used.
+            title: str) and returns a dict of extracted fields. If None and
+            use_litellm is True, creates a LiteLLM-based extractor automatically.
+        use_litellm: If True (default) and llm_extractor is None, auto-create
+            a LiteLLM-backed LLM extractor. Set to False to use regex only.
 
     Returns:
         A validated RetrievalSpec ready for the retrieval layer.
@@ -161,6 +164,18 @@ def compose_retrieval_spec(
     # ── Step 1-3: Extract fields (LLM or regex) ──
     extracted: dict[str, object] = {}
     extraction_method = ExtractionMethod.REGEX
+
+    if llm_extractor is None and use_litellm:
+        # Auto-create LiteLLM extractor if configured
+        try:
+            from src.retrieval.llm_extractor import create_litellm_extractor
+            llm_extractor = create_litellm_extractor()
+            logger.debug("[%s] Auto-created LiteLLM extractor.", case_id)
+        except Exception as e:
+            logger.warning(
+                "[%s] Could not create LiteLLM extractor: %s. Falling back to regex only.",
+                case_id, e,
+            )
 
     if llm_extractor is not None:
         try:

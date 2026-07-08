@@ -1,0 +1,70 @@
+# OTB Weather Resolver — Pipeline Configuration
+# Defines the DAG of stages. Each stage is a module.function reference.
+
+pipeline:
+  name: "otb-weather-resolver-v1"
+  description: "Seven-stage pipeline: validate → spec → retrieve → normalize → reconcile → decide → output"
+
+  stages:
+    # Stage 1: Input & Validation
+    # Handled directly by PipelineRunner.run() — not listed here.
+    # It loads markets.json and produces immutable MarketCase objects.
+
+    # Stage 2: Compose Retrieval Spec
+    - name: compose_spec
+      stage_num: 2
+      module: src.retrieval.spec
+      function: compose_retrieval_spec
+      on_error: unclear
+      description: "LLM + regex extraction of station/date/measurement from ancillary_data"
+
+    # Stage 3: Retrieval
+    - name: retrieve
+      stage_num: 3
+      module: src.retrieval.dispatch
+      function: retrieve_observations
+      on_error: unclear
+      description: "Fetch from Wunderground API → Playwright fallback → fixture replay"
+
+    # Stage 4: Normalization
+    - name: normalize
+      stage_num: 4
+      module: src.normalization
+      function: normalize
+      on_error: unclear
+      description: "Unit conversion, precision rounding, quality checks, anomaly detection"
+
+    # Stage 5: Reconciliation
+    - name: reconcile
+      stage_num: 5
+      module: src.reconciliation
+      function: reconcile
+      on_error: unclear
+      description: "Finality gate → quality gate → parse rules → compare to threshold"
+
+    # Stage 6: Decision
+    - name: decide
+      stage_num: 6
+      module: src.decision.resolver
+      function: resolve
+      on_error: unclear
+      description: "Deterministic mapping + conditional LLM reviewer"
+
+    # Stage 7: Output Formatting
+    # Handled by PipelineRunner.write_results() — not listed here.
+
+# LLM Provider configuration
+llm:
+  model: "${LITELLM_MODEL:-gemini-2.5-flash}"
+  base_url: "${LITELLM_BASE_URL:-http://localhost:4000/v1}"
+  api_key: "${LITELLM_API_KEY:-sk-litellm-otb-master-key}"
+
+  # Prompt names in Langfuse Prompt Registry
+  prompts:
+    spec_extraction: "weather-spec-extraction"
+    reviewer: "weather-reviewer"
+
+  # LLM reviewer thresholds
+  reviewer:
+    invoke_below_confidence: 0.85   # Only invoke LLM reviewer if confidence < 0.85
+    cap_confidence_at: 0.70         # If confidence was 0.50-0.70, cap at 0.70 even if reviewer agrees
