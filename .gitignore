@@ -18,6 +18,9 @@ htmlcov/
 # Fixtures (captured data snapshots)
 data/fixtures/
 
+# Output
+output/
+
 # IDE
 .idea/
 .vscode/
