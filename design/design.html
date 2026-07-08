@@ -232,7 +232,7 @@
 
   /* ── Bottom Panel: Observability ── */
   .obs-panel {
-    height: 340px;
+    height: 420px;
     min-height: 200px;
     border-top: 1px solid var(--border);
     background: var(--panel-bg);
@@ -474,7 +474,7 @@
         </div>
         <div class="io-box">
           <div class="io-label"><span class="badge blue">Replay</span> mode</div>
-          <div class="io-value">Loads pre-captured fixture from <code>data/fixtures/&lt;case_id&gt;.json</code>. Deterministic, no network calls. The rest of the pipeline runs identically — normalization and reconciliation do not know the data source.</div>
+          <div class="io-value">Loads pre-captured fixture from <code>data/fixtures/&lt;case_id&gt;.json</code>. The fixture was written by a prior live run (step 16 above) — it contains the raw API response, extracted observations, and source trace. No network calls. The rest of the pipeline runs identically — normalization and reconciliation do not know the data source.</div>
         </div>
       </div>
     </div>
@@ -486,7 +486,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="rf-node" style="border-color: var(--accent);">Replay?<br><small>--fixtures flag</small></div>
           <span class="rf-arrow">→ yes →</span>
-          <div class="rf-node">replay.py<br><small>load fixture JSON</small></div>
+          <div class="rf-node">replay.py<br><small>load fixture from<br>data/fixtures/&lt;case_id&gt;.json</small></div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin-left:40px;">
           <span class="rf-arrow">→ no → source_type?</span>
@@ -531,6 +531,7 @@
         <tr><td>13. Apply source-lag guardrail</td><td><code>guardrails.source_lag</code></td><td>For sources with known lag (NOAA: +5 days), if today's date is within the lag window, extend the effective finality threshold. The finality check still runs, but a <code>not_yet</code> result is treated as expected rather than a hard gate.</td></tr>
         <tr><td>14. Check partial-data window</td><td><code>guardrails.partial_data</code></td><td>If the primary fetch occurred within the partial-data window (e.g., within 6 hours of the window end per guardrail config), and the observation count is below the expected threshold, flag the batch as potentially incomplete. Normalization will apply extra scrutiny.</td></tr>
         <tr><td>15. Emit RawObservationBatch</td><td>(all)</td><td>Package everything into an immutable <code>RawObservationBatch</code>: the filtered in-window observations, the aggregated value, the finality flag, and the full source trace with all guardrail triggers.</td></tr>
+        <tr><td>16. Save fixture (live mode)</td><td>(all above)</td><td>Write the raw API response payloads (both primary and finality fetches), the Playwright-scraped data (if fallback was used), and the source trace to <code>data/fixtures/&lt;case_id&gt;.json</code>. This is the deterministic replay anchor — future replay runs load this file instead of making network calls, and produce identical results. The fixture contains: the raw HTTP response body (or scraped HTML), the extracted observations, the source trace, and the RetrievalSpec that produced it — so an operator can understand why the resolver fetched what it did.</td></tr>
       </table>
     </div>
 
@@ -571,6 +572,24 @@
     </div>
 
     <details class="annotation">
+      <summary>Fixture format — what gets saved to disk in live mode</summary>
+      <div class="annot-body">
+        <p>Each fixture is a JSON file at <code>data/fixtures/&lt;case_id&gt;.json</code> containing:</p>
+        <table class="gate-table">
+          <tr><th>Field</th><th>Description</th></tr>
+          <tr><td><code>case_id</code></td><td>Matches the market case</td></tr>
+          <tr><td><code>captured_at</code></td><td>UTC timestamp of the live run that produced this fixture</td></tr>
+          <tr><td><code>retrieval_spec</code></td><td>A snapshot of the RetrievalSpec used — so replay can validate that the same spec would have been produced</td></tr>
+          <tr><td><code>primary_fetch</code></td><td>Raw HTTP response body (or Playwright-scraped JSON), status code, headers, latency</td></tr>
+          <tr><td><code>finality_fetch</code></td><td>Same shape as primary_fetch, for the finality check. <code>null</code> if no finality fetch was needed</td></tr>
+          <tr><td><code>extracted_value</code></td><td>The aggregated value that was extracted from the primary fetch</td></tr>
+          <tr><td><code>source_trace</code></td><td>Full trace: paths taken, retries, guardrail flags, errors</td></tr>
+        </table>
+        <p style="margin-top:8px;">Fixtures are immutable once written — replay runs never modify them. If a live run re-fetches the same case, it overwrites the fixture. This is intentional: the latest data is the most authoritative, and overwriting preserves the "replay produces the same result as the last live run" invariant.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
       <summary>Field mapping table (measurement + aggregation → API field)</summary>
       <div class="annot-body">
         <p>Maintained in <code>src/retrieval/dispatch.py</code>. Every known (measurement, aggregation) pair is mapped to the exact API field name:</p>
@@ -601,42 +620,98 @@
   <!-- ═══ Stage: Normalization ═══ -->
   <div class="stage-detail" id="detail-normalization">
     <h2>Normalization</h2>
-    <div class="module">src/normalization/units.py, precision.py, timezone.py, quality.py</div>
+    <div class="module">src/normalization/convert.py, round.py, verify.py, quality.py, anomaly.py</div>
 
     <div class="section">
       <h3>What it does</h3>
-      <ul>
-        <li>Converts raw source values to the unit expected by the market</li>
-        <li>Rounds to market-specified precision (whole degrees for temp, 2 decimals for precip)</li>
-        <li>Ensures the observation falls within the station's local day, not UTC</li>
-        <li>Flags missing, partial, or anomalous data before it reaches reconciliation</li>
-      </ul>
+      <p>Takes the <code>RawObservationBatch</code> from retrieval and the <code>RetrievalSpec</code> from stage 2, and transforms the extracted value into a normalized form ready for comparison against market rules. Every operation is deterministic — unit conversion, precision rounding, window verification, and quality checks are all pure math or rule-based logic. No LLM involvement.</p>
+    </div>
+
+    <div class="section">
+      <h3>Inputs</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label">From retrieval</div>
+          <div class="io-value"><code>RawObservationBatch</code> — observations array, extracted_value, finality flag, source_trace with guardrail flags</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label">From stage 2</div>
+          <div class="io-value"><code>RetrievalSpec</code> — target window, unit, precision, timezone, measurement, aggregation, guardrails</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Step-by-step transformation</h3>
+      <table class="gate-table">
+        <tr><th>Step</th><th>Module</th><th>What it does</th><th>Deterministic?</th></tr>
+        <tr><td>1. Unit conversion</td><td><code>convert.py</code></td><td>If the extracted value's unit differs from the spec's expected unit, convert. <code>°F → °C</code>: <code>(F - 32) × 5/9</code>. <code>°C → °F</code>: <code>C × 9/5 + 32</code>. <code>in → mm</code>: <code>in × 25.4</code>. <code>mph → kph</code>: <code>mph × 1.609</code>. All conversions are pure math with known constants. The converted value is tagged with the target unit.</td><td>✅</td></tr>
+        <tr><td>2. Precision rounding</td><td><code>round.py</code></td><td>Round the converted value to the spec's precision. <code>precision=1</code> (whole degrees) → <code>round(v)</code>. <code>precision=2</code> → <code>round(v, 2)</code>. Note: this rounds the <em>aggregated</em> value, not individual observations — the station's own reported daily high/low is already whole-degree and was extracted as-is. Rounding is a safety net, not a transformation of station data.</td><td>✅</td></tr>
+        <tr><td>3. Window-boundary verification</td><td><code>verify.py</code></td><td>Confirm that every observation used in the aggregation falls within the target window per the spec's timezone. This is defense-in-depth — retrieval already filtered by timezone (step 9), but normalization re-verifies. If any in-window observation has a local timestamp outside the window, the mismatch is flagged in the trace.</td><td>✅</td></tr>
+        <tr><td>4. Guardrail flag escalation</td><td><code>quality.py</code></td><td>Read the guardrail flags recorded in the source trace — partial data, unit mismatch, response shape violations — and escalate them into quality flags on the normalized observation. A unit mismatch flagged by retrieval becomes a <code>unit_provenance_conflict</code> quality flag here. A partial-data flag becomes <code>incomplete_observations</code>.</td><td>✅</td></tr>
+        <tr><td>5. Observation completeness</td><td><code>quality.py</code></td><td>Count in-window observations vs. expected: a full single day should have ~24 hourly observations. Fewer → flag. Check for temporal gaps: if hour 03 and hour 05 are present but hour 04 is missing, flag as <code>observation_gap</code>. Check that the aggregation makes sense: a <code>max</code> over 3 observations is less reliable than over 24.</td><td>✅</td></tr>
+        <tr><td>6. Anomaly detection</td><td><code>anomaly.py</code></td><td>Run sanity range checks on the extracted value. A reported 90°C at Tokyo Haneda is a sensor error, not weather. Known physical limits per measurement: temperature outside [-80, 60]°C, wind gust > 300 kph, humidity outside [0, 100]%, precipitation > 2000 mm/month. Values outside these bounds are flagged as <code>anomalous</code>. This is not an LLM judgment call — it's a threshold check against known physical maxima.</td><td>✅</td></tr>
+        <tr><td>7. Emit NormalizedObservation</td><td><code>__init__.py</code></td><td>Package the normalized value, unit, precision, quality flags, completeness score, and anomaly flags into an immutable <code>NormalizedObservation</code> ready for reconciliation.</td><td>✅</td></tr>
+      </table>
     </div>
 
     <div class="section">
       <h3>Gating decisions</h3>
+      <p>These are hard gates. If any fail, the case cannot proceed to reconciliation:</p>
       <table class="gate-table">
         <tr><th>Check</th><th>If it fails</th></tr>
-        <tr><td>Unit conversion possible?</td><td class="gate-unclear">unclear — unit provenance conflict</td></tr>
-        <tr><td>Precision rounding unambiguous?</td><td class="gate-unclear">unclear — ambiguous rounding edge case</td></tr>
-        <tr><td>Station local day boundaries known?</td><td class="gate-unclear">unclear — timezone unresolvable</td></tr>
-        <tr><td>Observation present and complete?</td><td class="gate-unclear">unclear — missing daily high/low</td></tr>
-        <tr><td>Not intraday point masquerading as daily?</td><td class="gate-unclear">unclear — partial data</td></tr>
+        <tr><td>Unit conversion possible? (both source and target units known, conversion factor exists)</td><td class="gate-unclear">unclear — unit provenance conflict</td></tr>
+        <tr><td>Precision rounding unambiguous? (precision value is a positive integer, not 0 or negative)</td><td class="gate-unclear">unclear — ambiguous precision</td></tr>
+        <tr><td>At least one observation present within the target window?</td><td class="gate-unclear">unclear — no observations in window</td></tr>
+        <tr><td>No critical anomaly? (value outside physical possibility, not just unusual)</td><td class="gate-unclear">unclear — anomalous data</td></tr>
+      </table>
+      <p style="margin-top:8px;">Quality flags (partial data, gaps, unit mismatches) are soft — they reduce confidence in the decision stage but do not gate to unclear by themselves. Only hard failures (no observations, impossible values, unconvertible units) gate.</p>
+    </div>
+
+    <div class="section">
+      <h3>Output — NormalizedObservation</h3>
+      <table class="gate-table">
+        <tr><th>Field</th><th>Description</th></tr>
+        <tr><td><code>value</code></td><td>The normalized, converted, rounded value in the market's expected unit. e.g., <code>18</code></td></tr>
+        <tr><td><code>unit</code></td><td>The unit this value is in — guaranteed to match the RetrievalSpec unit</td></tr>
+        <tr><td><code>precision</code></td><td>The precision this value is rounded to — guaranteed to match the RetrievalSpec precision</td></tr>
+        <tr><td><code>observation_count</code></td><td>Number of in-window observations that contributed to the aggregation</td></tr>
+        <tr><td><code>expected_count</code></td><td>Expected number of observations (~24 for single day, ~720 for 30-day month)</td></tr>
+        <tr><td><code>completeness</code></td><td><code>0.0 – 1.0</code> — ratio of actual to expected observations</td></tr>
+        <tr><td><code>quality_flags</code></td><td>List of soft flags: <code>partial_data</code>, <code>observation_gap</code>, <code>unit_provenance_conflict</code>, <code>near_day_boundary</code></td></tr>
+        <tr><td><code>anomaly_flags</code></td><td>List of hard flags: <code>value_out_of_physical_range</code>, <code>sensor_error_suspected</code></td></tr>
+        <tr><td><code>source_trace</code></td><td>The original retrieval source trace, plus normalization operations applied</td></tr>
       </table>
     </div>
 
     <details class="annotation">
-      <summary>Timezone: station local day, not UTC</summary>
+      <summary>Why normalization is deterministic (no LLM)</summary>
       <div class="annot-body">
-        <p>A "June 1" observation at Tokyo Haneda spans 2026-06-01 00:00 to 23:59 JST (UTC+9). If the resolver naively uses UTC, observations from 15:00–23:59 UTC on May 31 would be incorrectly assigned to May 31 instead of June 1 JST.</p>
-        <p style="margin-top:8px;">Timezone is derived from station metadata (ICAO code → IANA timezone) or from the Wunderground page's own timezone label. City-name-based lookup is explicitly avoided.</p>
+        <p>By the time data reaches normalization, all ambiguity has been resolved upstream. Stage 2 used an LLM to parse free-text ancillary data into a structured RetrievalSpec. Retrieval used that spec to fetch structured data with known field names and unit labels.</p>
+        <p style="margin-top:8px;">Normalization's job is pure transformation on structured inputs: unit conversion (math), rounding (math), window verification (date arithmetic), completeness counting (arithmetic), and anomaly detection (threshold checks against known physical limits). There is no judgment call that an LLM would improve — it would only add latency, cost, and non-determinism to operations that are provably correct when done with math.</p>
       </div>
     </details>
 
     <details class="annotation">
-      <summary>Precision: "whole degrees" means the station's own reported value</summary>
+      <summary>Unit conversion safety — never assume, always verify</summary>
       <div class="annot-body">
-        <p>Wunderground stations report daily high/low as whole-degree values. The ancillary data says "measures temperatures to whole degrees" — this means the station's reported integer value is authoritative. If a derived calculation produces 68.7, the resolver uses the station's own reported 68 or 69, not a rounded derived value.</p>
+        <p>The retrieval layer tags every extracted value with the unit it was returned in, not the unit it requested. If the API was asked for <code>units=m</code> (Celsius) but the response metadata says <code>units=e</code> (Fahrenheit) — because the station ignores the param — normalization sees the actual unit and converts accordingly.</p>
+        <p style="margin-top:8px;">This means normalization does not trust that retrieval "got the right unit." It reads the unit label from the response and converts if needed. The guardrail flag <code>unit_provenance_conflict</code> is set when the response unit differs from the requested unit, and this travels downstream to reduce confidence in the decision stage.</p>
+      </div>
+    </details>
+
+    <details class="annotation">
+      <summary>Anomaly thresholds — physical limits, not statistical outliers</summary>
+      <div class="annot-body">
+        <p>Anomaly detection uses fixed physical bounds, not statistical methods (no z-scores, no neighbor comparisons). Rationale: weather is inherently variable, and an unusual-but-real temperature (40°C in Tokyo) should not be flagged just because it's a 3-sigma outlier. An impossible temperature (90°C) should be flagged regardless of distribution.</p>
+        <table class="gate-table">
+          <tr><th>Measurement</th><th>Valid range</th><th>Rationale</th></tr>
+          <tr><td>Temperature</td><td>[-80, 60] °C</td><td>Coldest recorded: -89.2°C (Vostok). Hottest: 56.7°C (Death Valley).</td></tr>
+          <tr><td>Wind gust</td><td>[0, 400] kph</td><td>Highest recorded: 408 kph (Barrow Island cyclone, 1996).</td></tr>
+          <tr><td>Humidity</td><td>[0, 100] %</td><td>Physical definition. Values >100% are sensor malfunctions.</td></tr>
+          <tr><td>Precipitation</td><td>[0, 3000] mm/month</td><td>Highest recorded monthly: ~9,300 mm (Cherrapunji, but that's annual). Monthly extreme ~2,500 mm.</td></tr>
+          <tr><td>Pressure</td><td>[850, 1090] hPa</td><td>Sea-level range. Highest: 1083.8 hPa (Agata, Siberia). Lowest: 870 hPa (Typhoon Tip).</td></tr>
+        </table>
       </div>
     </details>
   </div>
@@ -644,54 +719,126 @@
   <!-- ═══ Stage: Reconciliation ═══ -->
   <div class="stage-detail" id="detail-reconciliation">
     <h2>Reconciliation</h2>
-    <div class="module">src/reconciliation/rule_parser.py, finality.py, comparator.py</div>
+    <div class="module">src/reconciliation/rule_parser.py, finality.py, quality_gate.py, comparator.py</div>
 
     <div class="section">
-      <h3>Three sub-stages</h3>
-      <p>Reconciliation has three sequential checks. The first two are gates — if either fails, the market does not proceed to threshold comparison.</p>
+      <h3>What it does</h3>
+      <p>Takes the <code>NormalizedObservation</code> from stage 4, the finality flag from retrieval, and the market's question text, and determines whether the observed value satisfies the market rules. Three sequential gates — any can short-circuit to <code>p4</code> or <code>unclear</code> before reaching the threshold comparison.</p>
     </div>
 
     <div class="section">
-      <h3>1. Parse Market Rules</h3>
-      <p>Extracts the comparison operator and threshold from the question title and ancillary data.</p>
+      <h3>Inputs</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label">From normalization</div>
+          <div class="io-value"><code>NormalizedObservation</code> — value, unit, precision, quality_flags, anomaly_flags, completeness</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label">From retrieval</div>
+          <div class="io-value">Finality flag — <code>confirmed</code>, <code>not_yet</code>, or <code>unknown</code></div>
+        </div>
+        <div class="io-box">
+          <div class="io-label">From market case</div>
+          <div class="io-value"><code>question_data.title</code> + <code>ancillary_data</code> (res_data bracket rules)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Gate 1: Finality</h3>
+      <p>The market rules state: "This market can not resolve until the first data point for the following date has been published." This is checked first — nothing else matters if the market isn't final.</p>
       <table class="gate-table">
-        <tr><th>Question pattern</th><th>Operator</th><th>Threshold</th></tr>
-        <tr><td>"be 20°C on June 1?"</td><td>exact (==)</td><td>20</td></tr>
-        <tr><td>"be 29°C or higher?"</td><td>≥</td><td>29</td></tr>
-        <tr><td>"be 22°C or below?"</td><td>≤</td><td>22</td></tr>
-        <tr><td>"between 68-69°F?"</td><td>range (∈)</td><td>[68, 69]</td></tr>
+        <tr><th>Finality flag</th><th>Action</th></tr>
+        <tr><td><code>confirmed</code></td><td>Pass. Proceed to gate 2.</td></tr>
+        <tr><td><code>not_yet</code></td><td><span class="badge yellow">p4: Too Early</span> — the next-day datapoint does not yet exist on the resolution source.</td></tr>
+        <tr><td><code>unknown</code></td><td><span class="badge yellow">p4: Too Early</span> (conservative) — the finality fetch failed, so we cannot confirm the market is final. Conservative default: assume it isn't.</td></tr>
+      </table>
+      <p style="margin-top:8px;">Note: the finality check data was already fetched by retrieval (the second API call). Reconciliation only reads the flag — it does not make network calls.</p>
+    </div>
+
+    <div class="section">
+      <h3>Gate 2: Quality & Anomaly</h3>
+      <p>Before comparing values, check whether the normalized observation is trustworthy enough to compare. Quality flags from normalization are evaluated here.</p>
+      <table class="gate-table">
+        <tr><th>Flag</th><th>Severity</th><th>Action</th></tr>
+        <tr><td>No flags</td><td>—</td><td>Pass. Proceed to gate 3.</td></tr>
+        <tr><td><code>partial_data</code></td><td>Soft</td><td>Pass, but reduce confidence. Fewer than expected observations exist for the window.</td></tr>
+        <tr><td><code>observation_gap</code></td><td>Soft</td><td>Pass, but reduce confidence. Temporal gaps in the observation series.</td></tr>
+        <tr><td><code>unit_provenance_conflict</code></td><td>Soft</td><td>Pass, but reduce confidence. The API returned a different unit than requested.</td></tr>
+        <tr><td><code>near_day_boundary</code></td><td>Soft</td><td>Pass, but reduce confidence. Retrieval occurred near the day boundary; data may be incomplete.</td></tr>
+        <tr><td><code>value_out_of_physical_range</code></td><td>Hard</td><td class="gate-unclear">unclear — the observed value is physically impossible (e.g., 90°C in Tokyo)</td></tr>
+        <tr><td><code>sensor_error_suspected</code></td><td>Hard</td><td class="gate-unclear">unclear — the sensor appears to be malfunctioning</td></tr>
+        <tr><td>Completeness &lt; 0.5</td><td>Hard</td><td class="gate-unclear">unclear — fewer than half the expected observations; aggregation is unreliable</td></tr>
+      </table>
+      <p style="margin-top:8px;">Soft flags never gate on their own — they accumulate confidence penalties. A single soft flag drops confidence by ~0.1. Multiple soft flags compound. Hard flags or critically low completeness gate immediately.</p>
+    </div>
+
+    <div class="section">
+      <h3>Gate 3: Parse Market Rules & Compare</h3>
+      <p>Extract the comparison operator and threshold from the question title, then apply them to the normalized value. Bracket and tie-breaking rules come from <code>res_data</code> in ancillary_data.</p>
+
+      <h4 style="margin-top:16px; margin-bottom:8px;">3a. Operator & threshold extraction</h4>
+      <p>The question title is fed to a regex-based parser (not LLM — the patterns are constrained and well-known). The RetrievalSpec's measurement, aggregation, and unit fields provide cross-validation: the threshold's unit must match the spec's unit.</p>
+      <table class="gate-table">
+        <tr><th>Question pattern</th><th>Operator</th><th>Threshold</th><th>Example</th></tr>
+        <tr><td>"be X° on date?"</td><td><code>exact</code> (==)</td><td>X</td><td>"be 20°C on June 1?" → exact, 20</td></tr>
+        <tr><td>"be X° or higher?"</td><td><code>gte</code> (≥)</td><td>X</td><td>"be 29°C or higher?" → gte, 29</td></tr>
+        <tr><td>"be X° or below?"</td><td><code>lte</code> (≤)</td><td>X</td><td>"be 22°C or below?" → lte, 22</td></tr>
+        <tr><td>"be between X-Y°?"</td><td><code>range</code> (∈)</td><td>[X, Y]</td><td>"be between 68-69°F?" → range, [68, 69]</td></tr>
+        <tr><td>Unparseable</td><td>—</td><td>—</td><td class="gate-unclear">unclear — can't parse market rules</td></tr>
+      </table>
+
+      <h4 style="margin-top:16px; margin-bottom:8px;">3b. Bracket & tie rules</h4>
+      <p>The <code>res_data</code> field in ancillary_data defines which outcome wins at each threshold boundary: <code>p1: 0, p2: 1, p3: 0.5</code>. This means:</p>
+      <ul>
+        <li>For <code>exact</code>: if value == threshold → p2 (Yes). If value ≠ threshold → p1 (No).</li>
+        <li>For <code>gte</code>: if value ≥ threshold → p2. If value &lt; threshold → p1. At the boundary, p2 wins (res_data p2: 1).</li>
+        <li>For <code>lte</code>: if value ≤ threshold → p2. If value &gt; threshold → p1.</li>
+        <li>For <code>range</code>: if value ∈ [X, Y] → p2. If value outside → p1.</li>
+      </ul>
+      <p>The <code>p3: 0.5</code> signals a 50/50 tie. This is only used when the market is genuinely ambiguous — not as a default for uncertainty (that's <code>unclear</code>).</p>
+
+      <h4 style="margin-top:16px; margin-bottom:8px;">3c. Comparison</h4>
+      <p>Apply the operator to the normalized value. The comparison is pure math on known numbers.</p>
+      <table class="gate-table">
+        <tr><th>Operator</th><th>Normalized value = 18, Threshold = 20</th><th>Verdict</th></tr>
+        <tr><td><code>exact</code></td><td>18 == 20 → false</td><td>No → p1</td></tr>
+        <tr><td><code>gte</code></td><td>18 ≥ 20 → false</td><td>No → p1</td></tr>
+        <tr><td><code>lte</code></td><td>18 ≤ 20 → true</td><td>Yes → p2</td></tr>
+        <tr><td><code>range</code></td><td>18 ∈ [68, 69] → false</td><td>No → p1</td></tr>
+      </table>
+      <p style="margin-top:8px;">If the comparison result is unambiguous → verdict is <code>Yes</code> or <code>No</code>. If the value equals a threshold boundary and bracket rules don't clearly assign it → <code>p3: 50/50</code>. If the operator can't be applied (e.g., range comparison on a monthly precip value that's a single number, not a range) → <code>unclear</code>.</p>
+    </div>
+
+    <div class="section">
+      <h3>Output — ReconciliationVerdict</h3>
+      <table class="gate-table">
+        <tr><th>Field</th><th>Description</th></tr>
+        <tr><td><code>verdict</code></td><td><code>Yes</code> | <code>No</code> | <code>p3_tie</code> | <code>p4_too_early</code> | <code>unclear</code></td></tr>
+        <tr><td><code>gate</code></td><td>Which gate produced the verdict: <code>finality</code>, <code>quality</code>, <code>comparison</code></td></tr>
+        <tr><td><code>normalized_value</code></td><td>The value that was compared (carried forward from normalization)</td></tr>
+        <tr><td><code>operator</code></td><td>The parsed operator: <code>exact</code>, <code>gte</code>, <code>lte</code>, <code>range</code></td></tr>
+        <tr><td><code>threshold</code></td><td>The parsed threshold value(s)</td></tr>
+        <tr><td><code>comparison_result</code></td><td><code>true</code> | <code>false</code> | <code>null</code> (if gated before comparison)</td></tr>
+        <tr><td><code>confidence_penalties</code></td><td>List of soft quality flags that reduce confidence, each with penalty amount</td></tr>
+        <tr><td><code>reasoning</code></td><td>Concise explanation: "RJTT recorded a low of 18°C on June 1. The market asked whether the low would be exactly 20°C. 18 ≠ 20 → No."</td></tr>
       </table>
     </div>
 
-    <div class="section">
-      <h3>2. Finality Gate</h3>
-      <ul>
-        <li>Checks whether at least one observation timestamp exists for date+1 on the same station</li>
-        <li>If next-day data does not exist → <span class="badge yellow">p4: Too Early</span></li>
-        <li>This is checked <em>before</em> threshold comparison — nothing else matters if the market isn't final</li>
-      </ul>
-    </div>
-
-    <div class="section">
-      <h3>3. Evidence-to-Rules Comparison</h3>
-      <ul>
-        <li>Applies the parsed operator to the normalized observation</li>
-        <li>Clear match → reconciliation verdict (Yes/No)</li>
-        <li>Ambiguous, incomplete, or conflicting data → <span class="badge red">unclear</span></li>
-      </ul>
-    </div>
-
     <details class="annotation">
-      <summary>Why finality comes first</summary>
+      <summary>Why rule parsing is regex, not LLM</summary>
       <div class="annot-body">
-        <p>The market rules state: "This market can not resolve until the first data point for the following date has been published." This is a hard gate. Checking finality requires a retrieval (of date+1), but the result gates everything downstream. If finality fails, normalization and comparison work is saved.</p>
+        <p>The question title follows constrained patterns driven by Polymarket's question templates. "Will the [measurement] in [city] be [threshold] on [date]?" is structurally consistent across markets. Regex patterns cover all known variants. If a title doesn't match any known pattern, it gates to <code>unclear</code> rather than invoking an LLM — the cost of an unparseable market rule is low (one unclear case), and the risk of an LLM hallucinating an operator is higher.</p>
+        <p style="margin-top:8px;">The RetrievalSpec's unit and measurement fields provide cross-validation: if the regex extracts a threshold of "20" from a title that says "20°C", and the spec says <code>unit=F</code>, the mismatch is flagged and the case gates to <code>unclear</code>.</p>
       </div>
     </details>
 
     <details class="annotation">
-      <summary>Bracket and tie rules from ancillary data</summary>
+      <summary>res_data bracket rules — where they come from</summary>
       <div class="annot-body">
-        <p>The <code>res_data</code> field in ancillary data specifies how ties are handled: <code>p1: 0, p2: 1, p3: 0.5</code>. For an exact-match market like "be 20°C", if the observation is exactly 20°C, the outcome is p2 (Yes). The bracket rules define which side of a threshold boundary wins.</p>
+        <p>The <code>res_data</code> string is embedded in ancillary_data: <code>res_data: p1: 0, p2: 1, p3: 0.5. Where p1 corresponds to No, p2 to Yes, p3 to unknown.</code></p>
+        <p style="margin-top:8px;">This defines the payout values for each outcome, which doubles as the tie-breaking rule: p2: 1 means Yes wins at the boundary. p1: 0 means No only wins when the comparison is definitively false. p3: 0.5 is reserved for genuine 50/50 ties (rare — most markets say "MUST only resolve to p1 or p2").</p>
+        <p style="margin-top:8px;">These are parsed with a simple regex: <code>p1: (\d+\.?\d*), p2: (\d+\.?\d*), p3: (\d+\.?\d*)</code>.</p>
       </div>
     </details>
   </div>
@@ -699,51 +846,89 @@
   <!-- ═══ Stage: Decision ═══ -->
   <div class="stage-detail" id="detail-decision">
     <h2>Decision</h2>
-    <div class="module">src/decision/resolver.py, confidence.py, quorum.py</div>
+    <div class="module">src/decision/resolver.py, confidence.py, reviewer.py</div>
 
     <div class="section">
-      <h3>Two paths to a recommendation</h3>
-      <div class="io-row">
-        <div class="io-box">
-          <div class="io-label"><span class="badge green">Rule-based</span> (primary)</div>
-          <div class="io-value">Direct mapping from reconciliation verdict + confidence score. Handles the vast majority of markets — weather thresholds are deterministic.</div>
-        </div>
-        <div class="io-box">
-          <div class="io-label"><span class="badge purple">LLM quorum</span> (edge cases)</div>
-          <div class="io-value">Invoked only when rule-based confidence is borderline. 2+ models must agree; no consensus → unclear.</div>
-        </div>
-      </div>
+      <h3>What it does</h3>
+      <p>Takes the <code>ReconciliationVerdict</code> and produces the final recommendation (p1–p4 or unclear) with a confidence score. The core mapping is deterministic — a lookup table from verdict to recommendation. An LLM reviewer is invoked only as a safety net when confidence is borderline.</p>
     </div>
 
     <div class="section">
-      <h3>Confidence scoring tiers</h3>
+      <h3>Step 1: Deterministic mapping</h3>
+      <p>The reconciliation verdict maps directly to a recommendation. This handles the vast majority of cases — weather thresholds are math, not judgment.</p>
       <table class="gate-table">
-        <tr><th>Tier</th><th>Confidence</th><th>Conditions</th></tr>
-        <tr><td>High</td><td>0.9 – 1.0</td><td>Direct API response, clear comparison, all quality checks pass</td></tr>
-        <tr><td>Medium</td><td>0.7 – 0.9</td><td>Playwright fallback used, or minor data quality flags (resolvable)</td></tr>
-        <tr><td>Low</td><td>0.5 – 0.7</td><td>Ambiguous parsing, unit inference required, edge case</td></tr>
-        <tr><td>Insufficient</td><td>&lt; 0.5</td><td>→ <span class="badge red">unclear</span></td></tr>
+        <tr><th>Reconciliation verdict</th><th>Recommendation</th><th>When this happens</th></tr>
+        <tr><td><code>No</code></td><td><span class="badge red">p1</span></td><td>Comparison returned false. The observed value does not meet the threshold.</td></tr>
+        <tr><td><code>Yes</code></td><td><span class="badge green">p2</span></td><td>Comparison returned true. The observed value meets the threshold.</td></tr>
+        <tr><td><code>p3_tie</code></td><td><span class="badge purple">p3</span></td><td>The value is exactly at a boundary that bracket rules can't resolve. Rare.</td></tr>
+        <tr><td><code>p4_too_early</code></td><td><span class="badge yellow">p4</span></td><td>Finality gate failed. The next-day datapoint doesn't exist yet.</td></tr>
+        <tr><td><code>unclear</code></td><td><span class="badge" style="background:#361b1b;color:#f85149;">unclear</span></td><td>A hard gate failed upstream: anomalous data, unparseable rules, retrieval exhausted.</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>Step 2: Confidence calculation</h3>
+      <p>Confidence is computed from objective, auditable factors — not a model's subjective assessment.</p>
+      <table class="gate-table">
+        <tr><th>Factor</th><th>Value</th><th>Rationale</th></tr>
+        <tr><td>Base: API path</td><td>0.95</td><td>Direct API response with structured data.</td></tr>
+        <tr><td>Base: Playwright path</td><td>0.85</td><td>Scraped data; slightly higher risk of extraction errors.</td></tr>
+        <tr><td>Base: Replay path</td><td>0.90</td><td>Pre-captured fixture; trust the original but data may be stale.</td></tr>
+        <tr><td>Penalty: per soft quality flag</td><td>-0.08</td><td>Each flag (partial_data, observation_gap, unit_provenance_conflict, near_day_boundary) reduces confidence. Multiple flags stack additively.</td></tr>
+        <tr><td>Penalty: completeness &lt; 0.75</td><td>-0.10</td><td>Significantly fewer observations than expected.</td></tr>
+        <tr><td>Floor</td><td>0.50</td><td>Confidence cannot drop below 0.50 from penalties alone. Below this threshold, the case should have gated to <code>unclear</code> in reconciliation.</td></tr>
+      </table>
+      <p style="margin-top:8px;">Example: API path (0.95) + partial_data flag (-0.08) + unit_provenance_conflict (-0.08) → 0.79. This is Medium tier — still resolvable, but the LLM reviewer will be invoked.</p>
+    </div>
+
+    <div class="section">
+      <h3>Step 3: LLM reviewer (conditional)</h3>
+      <p>The LLM is a <strong>reviewer, not a decider</strong>. It cannot override a high-confidence deterministic result. It can only escalate a borderline result to <code>unclear</code> if it finds a reasoning flaw.</p>
+      <table class="gate-table">
+        <tr><th>Confidence</th><th>LLM reviewer invoked?</th><th>What it can do</th></tr>
+        <tr><td>≥ 0.85</td><td>No</td><td>— The deterministic result stands. High-confidence API responses with no quality flags don't need review.</td></tr>
+        <tr><td>0.70 – 0.85</td><td>Yes — single LLM</td><td>The LLM receives the full evidence chain: RetrievalSpec, source trace, normalized observations, reconciliation reasoning, and the deterministic recommendation. It is asked: "Do you agree with this conclusion? If not, explain specifically what is wrong." If the LLM disagrees → escalate to <code>unclear</code>. If it agrees → the deterministic result stands, confidence unchanged.</td></tr>
+        <tr><td>0.50 – 0.70</td><td>Yes — single LLM</td><td>Same review process. Additionally, if the LLM agrees, confidence is capped at 0.70 — the system is fundamentally uncertain, and the LLM's agreement doesn't make it more certain.</td></tr>
+        <tr><td>&lt; 0.50</td><td>N/A</td><td>Should have gated to <code>unclear</code> in reconciliation. If it reaches decision, treat as <code>unclear</code>.</td></tr>
+      </table>
+      <p style="margin-top:8px;">The LLM reviewer is a <strong>one-way safety valve</strong>: it can only make the system more cautious (deterministic result → unclear), never more confident (unclear → p1/p2) and never change the recommendation (p1 → p2). This preserves the conservative bias: when in doubt, admit uncertainty.</p>
+    </div>
+
+    <div class="section">
+      <h3>Output — Resolution</h3>
+      <table class="gate-table">
+        <tr><th>Field</th><th>Description</th></tr>
+        <tr><td><code>recommendation</code></td><td><code>p1</code> | <code>p2</code> | <code>p3</code> | <code>p4</code> | <code>unclear</code></td></tr>
+        <tr><td><code>confidence</code></td><td><code>0.0 – 1.0</code> — computed from objective factors, not model-assigned</td></tr>
+        <tr><td><code>path</code></td><td><code>deterministic</code> | <code>deterministic + llm_reviewed</code> | <code>llm_escalated_to_unclear</code></td></tr>
+        <tr><td><code>llm_review</code></td><td><code>null</code> if not invoked. Otherwise: <code>{model, agreed: true|false, reasoning: "…"}</code></td></tr>
+        <tr><td><code>reasoning</code></td><td>Concise explanation carried forward from reconciliation, optionally augmented by LLM review notes</td></tr>
       </table>
     </div>
 
     <details class="annotation">
-      <summary>Conservative default: unclear beats wrong-confident</summary>
+      <summary>Why the LLM is a reviewer, not a decider</summary>
       <div class="annot-body">
-        <p>A wrong confident p1 or p2 is worse than returning <code>unclear</code> on an ambiguous case. This bias is built into every decision point: confidence must clear a minimum threshold before a definitive p1/p2 is emitted. When in doubt, the resolver admits uncertainty.</p>
+        <p>The deterministic path (verdict → recommendation) is provably correct for the vast majority of markets: the comparison is math on known numbers. Introducing an LLM as a decider would add latency, cost, and non-determinism to cases that don't need it.</p>
+        <p style="margin-top:8px;">The reviewer pattern gives us the best of both: high-confidence cases skip the LLM entirely (fast, cheap, deterministic). Borderline cases get a second opinion. But the LLM can only veto — it can't override a clear No with a Yes, because that would mean the LLM hallucinated a correction to correct math.</p>
+        <p style="margin-top:8px;">This is also why there's no "quorum" of multiple models. A quorum implies the models are voting on the answer, which means they could collectively override the deterministic result. A single reviewer that can only escalate to unclear preserves the conservative bias without introducing voting dynamics.</p>
       </div>
     </details>
 
     <details class="annotation">
-      <summary>LLM quorum design</summary>
+      <summary>What the LLM reviewer sees</summary>
       <div class="annot-body">
-        <p>When invoked, 2-3 LLM providers are called in parallel with identical prompts containing the normalized evidence, parsed market rules, and reconciliation output. The models independently return p1/p2/p3/p4/unclear + reasoning.</p>
-        <p style="margin-top:8px;">Quorum rules:</p>
+        <p>The LLM prompt includes:</p>
         <ul style="padding-left:16px;">
-          <li>Unanimous → adopt the recommendation</li>
-          <li>Majority (2 of 3) → adopt with reduced confidence</li>
-          <li>Split or no consensus → unclear</li>
+          <li>The market question (from <code>question_data.title</code>)</li>
+          <li>The RetrievalSpec (station, window, measurement, unit, precision)</li>
+          <li>The source trace summary (API/Playwright, status, obs count)</li>
+          <li>The normalized value and quality flags</li>
+          <li>The reconciliation reasoning: operator, threshold, comparison result</li>
+          <li>The deterministic recommendation and confidence</li>
         </ul>
-        <p style="margin-top:8px;">Provider abstraction in <code>src/models/providers.py</code> supports OpenAI, Anthropic, and others via a common interface.</p>
+        <p style="margin-top:8px;">The prompt asks: <em>"Review this weather market resolution. The system has determined [recommendation] with [confidence] confidence. Do you see any errors in the evidence chain, logical flaw in the comparison, or reason this market should be unclear instead? Answer ONLY 'agree' or 'unclear' with a brief explanation."</em></p>
+        <p style="margin-top:8px;">This constrained output format prevents the LLM from proposing alternative recommendations or introducing new reasoning paths. It's a binary check: agree or escalate.</p>
       </div>
     </details>
   </div>
@@ -754,23 +939,58 @@
     <div class="module">src/output/formatter.py</div>
 
     <div class="section">
+      <h3>What it does</h3>
+      <p>Assembles the final structured JSON for each case from the Resolution object produced by the decision stage, plus the evidence chain accumulated across all previous stages. Writes the results array to <code>output/results.json</code>.</p>
+    </div>
+
+    <div class="section">
+      <h3>Input</h3>
+      <div class="io-box">
+        <div class="io-label">From decision + accumulated context</div>
+        <div class="io-value"><code>Resolution</code> (recommendation, confidence, path, llm_review, reasoning) + NormalizedObservation + RetrievalSpec + source_trace + market case metadata</div>
+      </div>
+    </div>
+
+    <div class="section">
       <h3>Output structure per case</h3>
       <table class="gate-table">
-        <tr><th>Field</th><th>Description</th></tr>
-        <tr><td><code>case_id</code></td><td>Matches input case_id</td></tr>
-        <tr><td><code>recommendation</code></td><td><code>p1</code> | <code>p2</code> | <code>p3</code> | <code>p4</code> | <code>unclear</code></td></tr>
-        <tr><td><code>confidence</code></td><td>0.0 – 1.0</td></tr>
-        <tr><td><code>evidence</code></td><td>Normalized observation: station, date, value, unit</td></tr>
-        <tr><td><code>source_trace</code></td><td>URL, HTTP status, retrieval path, timestamp, latency, errors</td></tr>
-        <tr><td><code>reasoning</code></td><td>Concise explanation tied to market rules</td></tr>
-        <tr><td><code>review_reason</code></td><td>Why the case should remain unclear or require human review (or null)</td></tr>
+        <tr><th>Field</th><th>Source</th><th>Description</th></tr>
+        <tr><td><code>case_id</code></td><td>Market case</td><td>Matches input case_id</td></tr>
+        <tr><td><code>recommendation</code></td><td>Decision</td><td><code>p1</code> | <code>p2</code> | <code>p3</code> | <code>p4</code> | <code>unclear</code></td></tr>
+        <tr><td><code>confidence</code></td><td>Decision</td><td><code>0.0 – 1.0</code></td></tr>
+        <tr><td><code>decision_path</code></td><td>Decision</td><td><code>deterministic</code> | <code>deterministic + llm_reviewed</code> | <code>llm_escalated_to_unclear</code></td></tr>
+        <tr><td><code>evidence</code></td><td>Normalization + RetrievalSpec</td><td>Station, window, measurement, normalized value with unit and precision</td></tr>
+        <tr><td><code>source_trace</code></td><td>Retrieval + Normalization</td><td>Per-fetch URLs, status codes, paths, latencies, retries, guardrail flags, normalization operations</td></tr>
+        <tr><td><code>reasoning</code></td><td>Reconciliation + Decision</td><td>Concise explanation: "Station RJTT recorded a low of 18°C on 2026-06-01. Market asked: lowest temperature = 20°C? 18 ≠ 20 → No."</td></tr>
+        <tr><td><code>review_reason</code></td><td>Decision</td><td>Why unclear or escalated (if applicable). <code>null</code> for clean resolutions.</td></tr>
       </table>
     </div>
 
+    <div class="section">
+      <h3>Output modes</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label"><span class="badge green">Live</span> mode</div>
+          <div class="io-value">Writes <code>output/results.json</code>. Fixtures were already saved by the retrieval stage (step 16). The results file references the fixture by case_id.</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label"><span class="badge blue">Replay</span> mode</div>
+          <div class="io-value">Writes <code>output/results.json</code>. All data came from fixtures — the results file is identical to what the original live run would have produced.</div>
+        </div>
+      </div>
+    </div>
+
     <details class="annotation">
-      <summary>Output modes: results.json and live snapshots</summary>
+      <summary>Evaluation: comparing results against gold answers</summary>
       <div class="annot-body">
-        <p>Replay and live modes both write <code>output/results.json</code>. In live mode, raw source snapshots are additionally saved to <code>data/fixtures/</code> so future replay runs can reproduce the same decisions deterministically. This closes the loop between live retrieval and replay grading.</p>
+        <p>An external evaluation script (<code>evaluate.py</code>) compares <code>output/results.json</code> against <code>gold_visible/answers.json</code>. Metrics:</p>
+        <ul style="padding-left:16px;">
+          <li><strong>Accuracy:</strong> % of cases where recommendation matches gold</li>
+          <li><strong>Conservatism score:</strong> unclear cases that would have been wrong if forced — these are <em>good</em> outcomes, not errors</li>
+          <li><strong>False confident:</strong> cases where the resolver returned p1/p2 with confidence ≥ 0.7 but was wrong — these are the worst failures</li>
+          <li><strong>False unclear:</strong> cases where the resolver returned unclear on a gold case that was clearly resolvable</li>
+        </ul>
+        <p style="margin-top:8px;">The evaluation script runs separately from the resolver — it's a grading tool for evaluators, not part of the resolution pipeline.</p>
       </div>
     </details>
   </div>
@@ -834,43 +1054,69 @@ const PIPELINE = [
   {
     id: "normalization",
     label: "Normalization",
-    sub: "units, precision, timezone, quality",
+    sub: "unit conversion, precision, quality checks",
     trace: [
-      ["tl-ts","[12:00:01.389]"],[""," "],["tl-stage","normalization"],
-      ["","  raw=18°C → normalized=18°C (no conversion needed), precision=1, tz=Asia/Tokyo"],
-      ["","  quality_check: daily_low present, 24 hourly observations, no gaps"]
+      ["tl-ts","[12:00:01.660]"],[""," "],["tl-stage","normalization"],
+      ["","  unit_convert: extracted=18°C, spec_unit=C → no conversion needed"],
+      ["tl-ts","[12:00:01.662]"],[""," "],["tl-stage","normalization"],
+      ["","  precision_round: value=18, spec_precision=1 → 18 (already whole)"],
+      ["tl-ts","[12:00:01.665]"],[""," "],["tl-stage","normalization"],
+      ["","  window_verify: 24 obs, all within [2026-06-01T00:00, 2026-06-01T23:59]+09:00 ✓"],
+      ["tl-ts","[12:00:01.668]"],[""," "],["tl-stage","normalization"],
+      ["","  guardrail_escalation: source_trace flags=[] → no quality flags to escalate"],
+      ["tl-ts","[12:00:01.671]"],[""," "],["tl-stage","normalization"],
+      ["","  completeness: 24/24 obs (1.0), no temporal gaps → complete"],
+      ["tl-ts","[12:00:01.674]"],[""," "],["tl-stage","normalization"],
+      ["","  anomaly_check: 18°C ∈ [-80, 60] → valid"],
+      ["tl-ts","[12:00:01.678]"],[""," "],["tl-stage","normalization"],
+      ["","  NormalizedObservation(value=18, unit=C, precision=1, completeness=1.0, quality_flags=[], anomaly_flags=[])"]
     ]
   },
   {
     id: "reconciliation",
     label: "Reconciliation",
-    sub: "finality gate → compare to rules",
+    sub: "finality gate → quality gate → compare to rules",
     trace: [
-      ["tl-ts","[12:00:01.451]"],[""," "],["tl-stage","reconciliation"],
-      ["","  rule_parser: \"be 20°C\" → operator=exact, threshold=20"],
-      ["tl-ts","[12:00:01.452]"],[""," "],["tl-stage","reconciliation"],
-      ["","  "],["tl-gate","finality_gate: next-day datapoint found (2026-06-02 00:30 JST) → passed"],
-      ["tl-ts","[12:00:01.453]"],[""," "],["tl-stage","reconciliation"],
-      ["","  comparator: observed=18, operator=exact, threshold=20 → 18 ≠ 20 → verdict=No"]
+      ["tl-ts","[12:00:01.682]"],[""," "],["tl-stage","reconciliation"],
+      ["","  "],["tl-gate","gate 1 (finality): flag=confirmed → passed"],
+      ["tl-ts","[12:00:01.684]"],[""," "],["tl-stage","reconciliation"],
+      ["","  gate 2 (quality): quality_flags=[], anomaly_flags=[], completeness=1.0 → passed"],
+      ["tl-ts","[12:00:01.687]"],[""," "],["tl-stage","reconciliation"],
+      ["","  rule_parser: 'Will the lowest temperature in Tokyo be 20°C on June 1?' → operator=exact, threshold=20"],
+      ["tl-ts","[12:00:01.689]"],[""," "],["tl-stage","reconciliation"],
+      ["","  cross-check: threshold_unit=°C matches spec_unit=C ✓"],
+      ["tl-ts","[12:00:01.691]"],[""," "],["tl-stage","reconciliation"],
+      ["","  bracket_rules: res_data → p1:0 (No), p2:1 (Yes), p3:0.5 (tie)"],
+      ["tl-ts","[12:00:01.693]"],[""," "],["tl-stage","reconciliation"],
+      ["","  comparison: 18 == 20 → false → verdict=No, confidence_penalties=[]"],
+      ["tl-ts","[12:00:01.695]"],[""," "],["tl-stage","reconciliation"],
+      ["","  ReconciliationVerdict(verdict=No, gate=comparison, operator=exact, threshold=20, comparison_result=false)"]
     ]
   },
   {
     id: "decision",
     label: "Decision",
-    sub: "rule-based or LLM quorum",
+    sub: "deterministic mapping + LLM reviewer (if needed)",
     trace: [
-      ["tl-ts","[12:00:01.510]"],[""," "],["tl-stage","decision"],
-      ["","  rule_based: verdict=No → recommendation=p1, confidence=0.95"]
+      ["tl-ts","[12:00:01.701]"],[""," "],["tl-stage","decision"],
+      ["","  deterministic_map: verdict=No → recommendation=p1"],
+      ["tl-ts","[12:00:01.703]"],[""," "],["tl-stage","decision"],
+      ["","  confidence: base=0.95 (API path) - 0 (no penalties) = 0.95"],
+      ["tl-ts","[12:00:01.704]"],[""," "],["tl-stage","decision"],
+      ["","  llm_reviewer: confidence=0.95 ≥ 0.85 → skipped (not needed)"],
+      ["tl-ts","[12:00:01.705]"],[""," "],["tl-stage","decision"],
+      ["","  Resolution(recommendation=p1, confidence=0.95, path=deterministic)"]
     ]
   },
   {
     id: "output",
     label: "Output Formatting",
-    sub: "structured JSON per case",
+    sub: "assemble final JSON → output/results.json",
     trace: [
-      ["tl-ts","[12:00:01.567]"],[""," "],["tl-stage","output"],
-      ["","  formatted result → {\"case_id\":\"tokyo_low_2026_06_01_20c\",\"recommendation\":\"p1\",...}"],
-      ["","  appended to results array (1/5)"]
+      ["tl-ts","[12:00:01.710]"],[""," "],["tl-stage","output"],
+      ["","  assembled result → {case_id:tokyo_low_2026_06_01_20c, recommendation:p1, confidence:0.95, …}"],
+      ["tl-ts","[12:00:01.712]"],[""," "],["tl-stage","output"],
+      ["","  appended to results array (1/5) → output/results.json"]
     ]
   }
 ];
