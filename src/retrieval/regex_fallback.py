@@ -178,9 +178,9 @@ def extract_with_regex(
     # 7. Precision
     result.precision = _extract_precision(ancillary_data)
 
-    # 8. Finality after (next day after window end)
+    # 8. Finality after (next day after window start at 00:00)
     if result.target_window is not None:
-        result.finality_after = result.target_window.end + timedelta(days=1)
+        result.finality_after = result.target_window.start + timedelta(days=1)
 
     return result
 
