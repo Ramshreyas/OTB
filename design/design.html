@@ -463,61 +463,137 @@
   <!-- ═══ Stage: Retrieval ═══ -->
   <div class="stage-detail" id="detail-retrieval">
     <h2>Retrieval</h2>
-    <div class="module">src/retrieval/replay.py, live.py, wunderground_api.py, wunderground_playwright.py</div>
+    <div class="module">src/retrieval/dispatch.py, wunderground_api.py, wunderground_playwright.py, noaa.py, replay.py</div>
 
     <div class="section">
       <h3>Mode selection</h3>
       <div class="io-row">
         <div class="io-box">
-          <div class="io-label"><span class="badge blue">Replay</span> mode</div>
-          <div class="io-value">Loads pre-captured fixture from <code>data/fixtures/</code> by case_id. Deterministic, no network calls.</div>
+          <div class="io-label"><span class="badge green">Live</span> mode</div>
+          <div class="io-value">Fetches from Wunderground/NOAA. Records snapshots for future replay. Routes through a source-type-specific fallback tree on failure.</div>
         </div>
         <div class="io-box">
-          <div class="io-label"><span class="badge green">Live</span> mode</div>
-          <div class="io-value">Fetches from Wunderground/NOAA. Records snapshots for future replay. Falls back through strategies on failure.</div>
+          <div class="io-label"><span class="badge blue">Replay</span> mode</div>
+          <div class="io-value">Loads pre-captured fixture from <code>data/fixtures/&lt;case_id&gt;.json</code>. Deterministic, no network calls. The rest of the pipeline runs identically — normalization and reconciliation do not know the data source.</div>
         </div>
       </div>
     </div>
 
     <div class="section">
-      <h3>Live retrieval fallback chain</h3>
-      <div class="retrieval-flow">
-        <div class="rf-node">Direct HTTP<br><small>Wunderground history endpoint</small></div>
-        <span class="rf-arrow">→</span>
-        <span class="rf-label">on fail</span>
-        <span class="rf-arrow">→</span>
-        <div class="rf-node">Playwright<br><small>headless browser, table extract</small></div>
-        <span class="rf-arrow">→</span>
-        <span class="rf-label">on fail</span>
-        <span class="rf-arrow">→</span>
-        <div class="rf-node retry">Retry<br><small>back to HTTP</small></div>
-        <span class="rf-arrow">→</span>
-        <span class="rf-label">exhausted</span>
-        <span class="rf-arrow">→</span>
-        <div class="rf-node fail">unclear<br><small>retrieval exhaustion</small></div>
+      <h3>Decision tree — source_type determines the retrieval path</h3>
+      <p>The retrieval layer reads <code>source_type</code> from the RetrievalSpec and branches. Each branch has its own fallback strategy, because not all sources support the same recovery paths.</p>
+      <div class="retrieval-flow" style="flex-direction: column; align-items: flex-start; gap: 12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="rf-node" style="border-color: var(--accent);">Replay?<br><small>--fixtures flag</small></div>
+          <span class="rf-arrow">→ yes →</span>
+          <div class="rf-node">replay.py<br><small>load fixture JSON</small></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-left:40px;">
+          <span class="rf-arrow">→ no → source_type?</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-left:80px;">
+          <div class="rf-node" style="border-color: var(--green);">wunderground_station</div>
+          <span class="rf-arrow">→</span>
+          <div class="rf-node">API<br><small>+ retry (guardrail)</small></div>
+          <span class="rf-arrow">→ fail →</span>
+          <div class="rf-node" style="border-color: var(--yellow);">Playwright<br><small>headless browser</small></div>
+          <span class="rf-arrow">→ fail →</span>
+          <div class="rf-node fail">unclear</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-left:80px;margin-top:4px;">
+          <div class="rf-node" style="border-color: var(--purple);">noaa_monthly</div>
+          <span class="rf-arrow">→</span>
+          <div class="rf-node">NOAA API<br><small>monthly summary</small></div>
+          <span class="rf-arrow">→ fail →</span>
+          <div class="rf-node fail">unclear<br><small>no Playwright path</small></div>
+        </div>
       </div>
     </div>
 
+    <div class="section">
+      <h3>Step-by-step: how the RetrievalSpec drives each fetch</h3>
+      <p>Below is the procedural walkthrough for a <code>wunderground_station</code> market — the most common and complex path. Each step shows which spec field is consumed and what action it drives.</p>
+
+      <table class="gate-table">
+        <tr><th>Step</th><th>Spec field consumed</th><th>Action</th></tr>
+        <tr><td>1. Choose strategy</td><td><code>source_type</code></td><td><code>wunderground_station</code> → dispatch to <code>wunderground_api.py</code>. <code>noaa_monthly</code> → dispatch to <code>noaa.py</code>. Unknown → <code>unclear</code>.</td></tr>
+        <tr><td>2. Parse station identity</td><td><code>station_url</code></td><td>Extract ICAO code and country from the URL path: <code>…/jp/tokyo/RJTT</code> → <code>ICAO=RJTT, CC=JP</code>. If the URL can't be parsed, fall back to station registry lookup.</td></tr>
+        <tr><td>3. Build date range</td><td><code>target_window</code> + <code>timezone</code></td><td>Convert window start/end from station-local to <code>YYYYMMDD</code> format for the API. A single day: <code>startDate=endDate=20260601</code>. A month: <code>startDate=20260501&endDate=20260531</code>. The timezone ensures the date boundaries are correct — June 1 JST starts at May 31 15:00 UTC.</td></tr>
+        <tr><td>4. Set unit parameter</td><td><code>unit</code></td><td>Map to API <code>units</code> param: <code>C</code> → <code>m</code> (metric), <code>F</code> → <code>e</code> (imperial). The API URL becomes: <code>GET …/observations/historical.json?apiKey=…&units=m&startDate=20260601&endDate=20260601</code>.</td></tr>
+        <tr><td>5. Apply retry guardrails</td><td><code>guardrails.retry</code></td><td>Read the retry guidance: "3× with 5s backoff for 503". Configure the HTTP session accordingly. If all retries are exhausted → fall back to Playwright.</td></tr>
+        <tr><td>6. Execute primary fetch</td><td>(all above combined)</td><td>Send the HTTP request. Record: URL, status code, latency, response size, retry count. On success → step 7. On failure after retries → Playwright fallback (or <code>unclear</code> if no fallback exists).</td></tr>
+        <tr><td>7. Validate response shape</td><td><code>guardrails.response_shape</code></td><td>Count observations in the response. A single-day window should have ~24. If the count is significantly lower (e.g., 7), flag as partial and record the guardrail trigger. A partially-populated day at the current date is expected; a fully missing historical date is suspicious.</td></tr>
+        <tr><td>8. Verify unit label</td><td><code>guardrails.unit_verification</code></td><td>Check the response metadata for the actual unit returned. Some stations (RJTT) return °C regardless of the <code>units</code> param. If response unit ≠ requested unit, record the mismatch for normalization to resolve.</td></tr>
+        <tr><td>9. Filter by timezone</td><td><code>timezone</code> + <code>target_window</code></td><td>Convert every observation's <code>valid_time_gmt</code> (UTC epoch) to station-local time using the IANA timezone. Discard observations that fall outside the target window. A June 1 JST window will include observations from 2026-05-31T15:00Z through 2026-06-01T14:59Z.</td></tr>
+        <tr><td>10. Look up field mapping</td><td><code>measurement</code> + <code>aggregation</code></td><td>Query the field mapping table in <code>dispatch.py</code>: <code>temperature + min</code> → extract <code>temp</code> from each observation, apply <code>min()</code>. <code>wind_gust + max</code> → extract <code>gust</code>, apply <code>max()</code>. <code>precipitation + sum</code> → extract <code>precip_total</code>, apply <code>sum()</code>.</td></tr>
+        <tr><td>11. Aggregate</td><td>(field mapping result)</td><td>Extract the target field from each in-window observation. Apply the aggregation function. Record the result: <code>{"value": 18, "unit": "C", "field": "temp"}</code>.</td></tr>
+        <tr><td>12. Build finality fetch</td><td><code>finality_after</code></td><td>Construct a second API call for the next-day window: <code>startDate=endDate=20260602</code>. Apply the same retry guardrails. If the fetch returns ≥1 observation with a timestamp ≥ <code>finality_after</code>, finality is <code>confirmed</code>. Otherwise <code>not_yet</code>. If the finality fetch itself fails after all retries and Playwright fallback, finality is <code>unknown</code>.</td></tr>
+        <tr><td>13. Apply source-lag guardrail</td><td><code>guardrails.source_lag</code></td><td>For sources with known lag (NOAA: +5 days), if today's date is within the lag window, extend the effective finality threshold. The finality check still runs, but a <code>not_yet</code> result is treated as expected rather than a hard gate.</td></tr>
+        <tr><td>14. Check partial-data window</td><td><code>guardrails.partial_data</code></td><td>If the primary fetch occurred within the partial-data window (e.g., within 6 hours of the window end per guardrail config), and the observation count is below the expected threshold, flag the batch as potentially incomplete. Normalization will apply extra scrutiny.</td></tr>
+        <tr><td>15. Emit RawObservationBatch</td><td>(all)</td><td>Package everything into an immutable <code>RawObservationBatch</code>: the filtered in-window observations, the aggregated value, the finality flag, and the full source trace with all guardrail triggers.</td></tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <h3>Playwright fallback path (wunderground_station only)</h3>
+      <p>When the API fails or returns unusable data, the Playwright strategy takes over. It uses the <code>station_url</code> directly rather than constructing an API call:</p>
+      <ul>
+        <li>Launches a headless Chromium browser</li>
+        <li>Navigates to the full station URL from the RetrievalSpec</li>
+        <li>Clicks the gear icon to toggle the unit setting per <code>unit</code> (C ↔ F)</li>
+        <li>Waits for the observations table to render</li>
+        <li>Scrapes all rows — each row is an hourly observation</li>
+        <li>Normalizes the scraped fields to match the same shape as the API response, so downstream stages don't need to know which path was taken</li>
+        <li>Records in source trace: <code>path=playwright</code>, page load time, any rendering errors</li>
+      </ul>
+      <p>Playwright has its own timeout and retry logic (separate from the HTTP retry guardrails, since browser failures are different from API failures). If Playwright also fails, the fetch is exhausted → <code>unclear</code>.</p>
+    </div>
+
+    <div class="section">
+      <h3>Output — RawObservationBatch</h3>
+      <div class="io-row">
+        <div class="io-box">
+          <div class="io-label">Input</div>
+          <div class="io-value">RetrievalSpec (from stage 2)</div>
+        </div>
+        <div class="io-box">
+          <div class="io-label">Output</div>
+          <div class="io-value"><code>RawObservationBatch</code> — immutable, with raw observations, extracted value, finality flag, and full source trace</div>
+        </div>
+      </div>
+      <table class="gate-table" style="margin-top:12px;">
+        <tr><th>Field</th><th>Description</th></tr>
+        <tr><td><code>observations</code></td><td>List of raw hourly observations within the target window, each with UTC timestamp, all available measurement fields, and the unit label from the response</td></tr>
+        <tr><td><code>extracted_value</code></td><td>The value after applying the aggregation. e.g., <code>{"value": 18, "unit": "C", "field": "temp", "aggregation": "min"}</code></td></tr>
+        <tr><td><code>finality</code></td><td><code>{"status": "confirmed" | "not_yet" | "unknown", "first_next_day_ts": "…" | null}</code></td></tr>
+        <tr><td><code>source_trace</code></td><td>Per fetch: URL, HTTP status, response size, latency, path (api/playwright/replay), retry count, guardrail flags triggered, any errors</td></tr>
+      </table>
+    </div>
+
     <details class="annotation">
-      <summary>Source trace — what gets recorded per retrieval</summary>
+      <summary>Field mapping table (measurement + aggregation → API field)</summary>
       <div class="annot-body">
-        <p>Every retrieval attempt records:</p>
-        <ul style="padding-left:16px;">
-          <li>Exact URL and query parameters</li>
-          <li>HTTP status code and response size</li>
-          <li>Timestamp of retrieval (UTC)</li>
-          <li>Path taken: <code>api</code> or <code>playwright</code></li>
-          <li>Latency in milliseconds</li>
-          <li>Any errors or fallback triggers</li>
-        </ul>
-        <p style="margin-top:8px;">This makes every decision debuggable — an operator can replay the exact query that produced a given result.</p>
+        <p>Maintained in <code>src/retrieval/dispatch.py</code>. Every known (measurement, aggregation) pair is mapped to the exact API field name:</p>
+        <table class="gate-table">
+          <tr><th>measurement</th><th>aggregation</th><th>API field</th><th>Aggregation fn</th></tr>
+          <tr><td><code>temperature</code></td><td><code>min</code></td><td><code>temp</code></td><td><code>min()</code> over window</td></tr>
+          <tr><td><code>temperature</code></td><td><code>max</code></td><td><code>temp</code></td><td><code>max()</code> over window</td></tr>
+          <tr><td><code>temperature</code></td><td><code>point</code></td><td><code>temp</code></td><td>exact timestamp match</td></tr>
+          <tr><td><code>wind_speed</code></td><td><code>max</code></td><td><code>wspd</code></td><td><code>max()</code> over window</td></tr>
+          <tr><td><code>wind_gust</code></td><td><code>max</code></td><td><code>gust</code></td><td><code>max()</code> over window</td></tr>
+          <tr><td><code>precipitation</code></td><td><code>sum</code></td><td><code>precip_total</code></td><td><code>sum()</code> over window</td></tr>
+          <tr><td><code>humidity</code></td><td><code>min</code> / <code>max</code> / <code>avg</code></td><td><code>rh</code></td><td>aggregation over window</td></tr>
+          <tr><td><code>visibility</code></td><td><code>min</code></td><td><code>vis</code></td><td><code>min()</code> over window</td></tr>
+          <tr><td><code>snow</code></td><td><code>sum</code></td><td><code>snow_hrly</code></td><td><code>sum()</code> over window</td></tr>
+          <tr><td colspan="4" style="color: var(--text-muted);">Extended for all known measurement types. Unknown pairs that reach retrieval (gated in stage 2) → <code>unclear</code>.</td></tr>
+        </table>
       </div>
     </details>
 
     <details class="annotation">
       <summary>Why retrieval failures produce unclear (not guesses)</summary>
       <div class="annot-body">
-        <p>If both API and Playwright strategies are exhausted, the resolver returns <code>unclear</code> rather than guessing. A wrong confident p1/p2 based on missing data is strictly worse than admitting the data wasn't retrievable. The system does not hallucinate weather observations.</p>
+        <p>If all strategies for a source type are exhausted, the resolver returns <code>unclear</code> rather than guessing. A wrong confident p1/p2 based on missing data is strictly worse than admitting the data wasn't retrievable. The system does not hallucinate weather observations.</p>
       </div>
     </details>
   </div>
