@@ -42,3 +42,4 @@ minio_data/
 # OS
 .DS_Store
 Thumbs.db
+output/demo_unclear_results.json
