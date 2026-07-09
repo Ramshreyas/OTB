@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 
@@ -31,6 +32,74 @@ from src.observability.tracing import flush as flush_langfuse
 from src.orchestration.runner import PipelineRunner
 
 logger = logging.getLogger("otb-resolver")
+
+
+def _print_results_table(run, gold_path: str | None = None) -> None:
+    """Print a table of results: case_id, expected, recommendation, confidence."""
+    # Load gold answers if provided
+    gold_by_id: dict[str, str] = {}
+    if gold_path:
+        try:
+            with open(gold_path, encoding="utf-8") as f:
+                gold = json.load(f)
+            for g in gold.get("results", gold):
+                gold_by_id[g["case_id"]] = g.get("recommendation", "?")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logging.getLogger("otb-resolver").warning(
+                "Could not load gold answers from %s: %s", gold_path, e
+            )
+
+    has_gold = bool(gold_by_id)
+
+    # Build header
+    header_parts = ["Case ID", "Rec", "Conf"]
+    if has_gold:
+        header_parts.insert(2, "Expected")
+
+    # Determine column widths
+    case_id_width = max(
+        max((len(ctx.case.case_id) for ctx in run.results), default=0),
+        len("Case ID"),
+    )
+
+    # Build and print table
+    sep = "-" * (case_id_width + 24 + (12 if has_gold else 0))
+    print(f"\n{'=' * (case_id_width + 24 + (12 if has_gold else 0))}")
+    if has_gold:
+        print(f"{'Case ID':<{case_id_width}}  Expected  Rec     Conf")
+    else:
+        print(f"{'Case ID':<{case_id_width}}  Rec     Conf")
+    print(sep)
+
+    for ctx in run.results:
+        case_id = ctx.case.case_id
+        rec = ctx.resolution.recommendation if ctx.resolution else "unclear"
+        conf = ctx.resolution.confidence if ctx.resolution else 0.0
+
+        # Colorize match/mismatch if gold available
+        if has_gold:
+            expected = gold_by_id.get(case_id, "?")
+            match_indicator = "✓" if rec == expected else "✗"
+            print(
+                f"{case_id:<{case_id_width}}  "
+                f"{expected:<8}  {rec:<6} {conf:.2f}  {match_indicator}"
+            )
+        else:
+            print(
+                f"{case_id:<{case_id_width}}  {rec:<6} {conf:.2f}"
+            )
+
+    print(sep)
+
+    # Print match summary if gold available
+    if has_gold:
+        matched = sum(
+            1 for ctx in run.results
+            if ctx.resolution
+            and gold_by_id.get(ctx.case.case_id) == ctx.resolution.recommendation
+        )
+        total = len(run.results)
+        print(f"Match: {matched}/{total} ({matched/total*100:.0f}%)" if total else "No cases")
 
 
 def main():
@@ -70,6 +139,10 @@ def main():
         "--pipeline-config", default="config/pipeline.yaml",
         help="Path to pipeline YAML config (default: config/pipeline.yaml).",
     )
+    parser.add_argument(
+        "--gold", default=None,
+        help="Path to gold answers JSON for expected-value comparison (optional).",
+    )
 
     args = parser.parse_args()
 
@@ -102,7 +175,10 @@ def main():
         # Write results
         runner.write_results(run, args.output)
 
-        # Print summary
+        # Print detailed results table
+        _print_results_table(run, args.gold)
+
+        # Print summary footer
         print(f"\n{'='*60}")
         print(f"Run: {run.run_id}")
         print(f"Cases: {run.total_cases}")

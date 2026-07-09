@@ -1,30 +1,30 @@
 {
-  "description": "Gold answers for the 5 visible OTB weather market cases. Used by evaluate.py to measure resolver accuracy.",
+  "description": "Gold answers for the 5 visible OTB weather market cases. Verified against actual Polymarket resolutions (Gamma API) and current fixture data. Used by evaluate.py to measure resolver accuracy.",
   "results": [
     {
       "case_id": "tokyo_low_2026_06_01_20c",
-      "recommendation": "p1",
-      "reasoning": "RJTT recorded low of 18°C on June 1, 2026. Market asked exactly 20°C. 18 ≠ 20 → No (p1)."
+      "recommendation": "p2",
+      "reasoning": "RJTT (Tokyo Haneda) recorded a low of 20°C on June 1, 2026 (fixture: RJTT_20260601_temperature_min.json, extracted_value: 20.0°C). Market asked exactly 20°C. 20 = 20 → Yes (p2). Confirmed by Polymarket resolution."
     },
     {
       "case_id": "tokyo_high_2026_06_01_29c_or_higher",
-      "recommendation": "unclear",
-      "reasoning": "No fixture exists for RJTT high temperature on June 1. In replay mode this gates to unclear due to retrieval failure."
+      "recommendation": "p2",
+      "reasoning": "RJTT (Tokyo Haneda) recorded a high of 31°C on June 1, 2026 (fixture: RJTT_20260601_temperature_max.json, extracted_value: 31°C). Market asked ≥29°C. 31 ≥ 29 → Yes (p2). Confirmed by Polymarket resolution."
     },
     {
       "case_id": "busan_high_2026_06_01_22c_or_below",
-      "recommendation": "unclear",
-      "reasoning": "No fixture exists for Busan Gimhae (RKPK) high temperature on June 1. In replay mode this gates to unclear."
+      "recommendation": "p1",
+      "reasoning": "RKPK (Busan Gimhae) recorded a high of 29°C on June 1, 2026 (fixture: RKPK_20260601_temperature_max.json, extracted_value: 29.0°C). Market asked ≤22°C. 29 > 22 → No (p1). Confirmed by Polymarket resolution."
     },
     {
       "case_id": "seoul_low_2026_06_01_16c",
-      "recommendation": "unclear",
-      "reasoning": "No fixture exists for Seoul Incheon (RKSI) low temperature on June 1. In replay mode this gates to unclear."
+      "recommendation": "p2",
+      "reasoning": "RKSI (Seoul Incheon) recorded a low of 16°C on June 1, 2026 (fixture: RKSI_20260601_temperature_min.json, extracted_value: 16°C). Market asked exactly 16°C. 16 = 16 → Yes (p2). Confirmed by Polymarket resolution."
     },
     {
       "case_id": "denver_high_2026_05_31_68_69f",
       "recommendation": "p1",
-      "reasoning": "KBKF recorded high of 72°F on May 31, 2026. Market asked between 68-69°F. 72 not in [68, 69] → No (p1)."
+      "reasoning": "KBKF (Buckley SFB, Aurora CO) recorded a high of 81°F on May 31, 2026 (fixture: KBKF_20260531_temperature_max.json, extracted_value: 81.0°F). Market asked between 68-69°F. 81 not in [68, 69] → No (p1). Confirmed by Polymarket resolution."
     }
   ]
 }
