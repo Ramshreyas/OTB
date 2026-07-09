@@ -168,7 +168,7 @@ The resolver is a **7-stage linear pipeline**: Validation → Spec Composition �
 4. **Traces must be debuggable.** Every stage emits structured telemetry to Langfuse.
 5. **Finality gates are mandatory.** Never resolve before the next-day datapoint exists.
 
-See [`docs/design.md`](docs/design.md) for detailed architecture diagrams and [`docs/implementation.md`](docs/implementation.md) for the full implementation plan.
+See [`docs/design.html`](docs/design.html) for detailed pipeline diagrams and [`docs/next-steps.md`](docs/next-steps.md) for the production scaling roadmap.
 
 ## Observability Stack (Optional)
 
@@ -278,10 +278,11 @@ pip install -e .
 ## Documentation
 
 - [`docs/case-study.md`](docs/case-study.md) — Original case study brief
-- [`docs/design.md`](docs/design.md) — Architecture, pipeline design, failure modes
-- [`docs/implementation.md`](docs/implementation.md) — Detailed implementation plan
+- [`docs/design.html`](docs/design.html) — Visual pipeline architecture (Mermaid diagram)
+- [`docs/next-steps.md`](docs/next-steps.md) — Production scaling: observability, human-in-loop, failure handling
+- [`docs/demo-notes.md`](docs/demo-notes.md) — Full presentation walkthrough (~55 min)
 - [`docs/live-retrieval-fix.md`](docs/live-retrieval-fix.md) — Known Wunderground retrieval issues
-- [`docs/observability-demo.md`](docs/observability-demo.md) — Langfuse observability walkthrough
+- [`docs/observability-demo.md`](docs/observability-demo.md) — Langfuse observability walkthrough (12 min)
 - [`AGENTS.md`](AGENTS.md) — Project context for AI coding assistants
 
 ## License
