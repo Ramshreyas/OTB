@@ -499,7 +499,7 @@ class TestWundergroundHelpers:
     def test_build_api_url(self):
         url = _build_api_url("RJTT", "JP", "20260601", "20260601", "m", "test_key")
         assert "api.weather.com" in url
-        assert "RJTT:2:JP" in url  # 3-part location: ICAO:Region:CC
+        assert "RJTT:9:JP" in url  # 3-part location: ICAO:9:CC
         assert "20260601" in url
         assert "units=m" in url
         assert "apiKey=test_key" in url
