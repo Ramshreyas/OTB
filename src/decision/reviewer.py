@@ -76,6 +76,12 @@ def review(
             reasoning=reasoning,
         )
         langfuse_prompt = prompt
+        # compiled is a list of messages from a chat prompt.
+        # Use directly as messages (don't double-wrap).
+        if isinstance(compiled, list):
+            messages = compiled
+        else:
+            messages = [{"role": "user", "content": compiled}]
     except Exception:
         logger.warning("Langfuse reviewer prompt unavailable; using fallback.")
         compiled = _REVIEWER_FALLBACK_PROMPT.format(
@@ -87,11 +93,12 @@ def review(
             recommendation=recommendation, confidence=f"{confidence:.2f}",
             reasoning=reasoning,
         )
+        messages = [{"role": "user", "content": compiled}]
         langfuse_prompt = None
 
     try:
         response = client.complete(
-            messages=[{"role": "user", "content": compiled}],
+            messages=messages,
             temperature=0.0,
             max_tokens=512,
             langfuse_prompt=langfuse_prompt,
