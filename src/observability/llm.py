@@ -50,13 +50,29 @@ class LLMClient:
 
     @property
     def _client(self):
-        """Lazy-init the OpenAI client."""
+        """Lazy-init the OpenAI client with Langfuse tracing.
+
+        Uses langfuse.openai.OpenAI (Langfuse v3 drop-in wrapper) instead of
+        plain openai.OpenAI. This automatically creates Generation observations
+        nested under the current Span, capturing model, tokens, latency, and I/O.
+
+        If Langfuse is not configured, falls back to plain OpenAI client.
+        """
         if self._openai is None:
-            from openai import OpenAI
-            self._openai = OpenAI(
-                base_url=self._base_url,
-                api_key=self._api_key,
-            )
+            try:
+                from langfuse.openai import OpenAI as LangfuseOpenAI
+                self._openai = LangfuseOpenAI(
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                )
+                logger.debug("LLM client using langfuse.openai.OpenAI for auto-tracing")
+            except (ImportError, Exception):
+                from openai import OpenAI
+                self._openai = OpenAI(
+                    base_url=self._base_url,
+                    api_key=self._api_key,
+                )
+                logger.debug("LLM client using plain openai.OpenAI (no Langfuse)")
         return self._openai
 
     def get_prompt(self, name: str, label: str = "production") -> Any:
@@ -85,14 +101,21 @@ class LLMClient:
         temperature: float = 0.0,
         max_tokens: int = 2048,
         langfuse_prompt: Any = None,
+        generation_name: str = "llm-completion",
     ) -> dict[str, Any]:
         """Send a chat completion request via LiteLLM proxy.
+
+        When langfuse.openai.OpenAI is used, the call is automatically traced
+        as a Generation observation nested in the current span. The
+        langfuse_prompt parameter links the generation to a Langfuse prompt
+        version for prompt-version tracking in the UI.
 
         Args:
             messages: List of {"role": "...", "content": "..."} dicts.
             temperature: Sampling temperature (0.0 = deterministic).
             max_tokens: Maximum tokens in response.
-            langfuse_prompt: Optional Langfuse prompt object for tracing.
+            langfuse_prompt: Optional Langfuse prompt object for linking.
+            generation_name: Name for the generation observation in Langfuse.
 
         Returns:
             Dict with keys: content, model, usage, latency_ms.
@@ -105,6 +128,13 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+
+        # langfuse.openai.OpenAI accepts a 'name' parameter for the generation
+        # observation name
+        kwargs["name"] = generation_name
+
+        # If we have a Langfuse prompt, use the langfuse_prompt parameter
+        # which langfuse.openai.OpenAI understands for prompt linking
         if langfuse_prompt is not None:
             kwargs["langfuse_prompt"] = langfuse_prompt
 

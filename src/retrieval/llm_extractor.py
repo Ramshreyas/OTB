@@ -62,17 +62,24 @@ def create_litellm_extractor():
                     langfuse_prompt = prompt
                 except Exception:
                     logger.warning("Langfuse prompt unavailable; using fallback prompt.")
-                    compiled = _FALLBACK_PROMPT.format(title=title, ancillary_data=ancillary_data)
+                    compiled = [{"role": "user", "content": _FALLBACK_PROMPT.format(title=title, ancillary_data=ancillary_data)}]
                     langfuse_prompt = None
+
+                # compiled is a list of messages from a chat prompt, or a single
+                # message list from the fallback. Use directly as messages.
+                if isinstance(compiled, list):
+                    messages = compiled
+                else:
+                    messages = [{"role": "user", "content": compiled}]
 
                 logger.info("Calling LLM (%s) for spec extraction (attempt %d/3)...",
                            client.model, attempt + 1)
 
                 response = client.complete(
-                    messages=[{"role": "user", "content": compiled}],
+                    messages=messages,
                     temperature=0.0,
                     max_tokens=2048,
-                    langfuse_prompt=langfuse_prompt,
+                    generation_name="spec-extraction",
                 )
 
                 raw_text = response["content"]

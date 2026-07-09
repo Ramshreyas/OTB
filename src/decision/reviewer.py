@@ -95,6 +95,7 @@ def review(
             temperature=0.0,
             max_tokens=512,
             langfuse_prompt=langfuse_prompt,
+            generation_name="reviewer-check",
         )
     except Exception as e:
         logger.warning("LLM reviewer call failed (connection or other error): %s. "

@@ -111,7 +111,17 @@ class PipelineRunner:
             if not cases:
                 raise ValueError(f"Case '{case_id}' not found in manifest.")
 
+        # Emit a top-level validation trace showing manifest metadata
+        _emit_manifest_validation_trace(
+            input_path=input_path,
+            schema_version=manifest.schema_version,
+            case_count=len(cases),
+            case_ids=[c.case_id for c in cases],
+            mode=mode,
+        )
+
         # ── Run stages per case ──
+        # Each case gets a root Langfuse trace. All stage spans nest under it.
         results: list[PipelineContext] = []
         for i, market_case in enumerate(cases):
             logger.info(
@@ -120,21 +130,78 @@ class PipelineRunner:
             )
             ctx = PipelineContext(case=market_case)
 
-            for stage_fn in self._stages:
-                if ctx.terminal:
-                    logger.info(
-                        "[%s] Pipeline short-circuited at stage '%s': %s",
-                        market_case.case_id, ctx.stage, ctx.terminal_reason,
-                    )
-                    break
+            # Create a root trace for this case in Langfuse
+            ctx = _run_case_with_trace(ctx, self._stages, mode, fixtures_dir,
+                                       run_id, i, len(cases), extra_kwargs)
+            results.append(ctx)
 
-                ctx = stage_fn(
-                    ctx,
-                    mode=mode,
-                    fixtures_dir=fixtures_dir,
-                    **extra_kwargs,
-                )
+        run = PipelineRun(
+            run_id=run_id,
+            started_at=started_at,
+            total_cases=len(cases),
+            results=results,
+        )
+        logger.info(
+            "[run %s] Complete. %d cases: %s",
+            run_id, run.total_cases, run.summary,
+        )
+        return run
 
+    def run_cases(
+        self,
+        *,
+        cases: tuple,
+        mode: str = "live",
+        fixtures_dir: str = "data/fixtures",
+        case_id: str | None = None,
+        run_id: str | None = None,
+        **extra_kwargs: Any,
+    ) -> PipelineRun:
+        """Run all stages for a pre-built collection of MarketCase objects.
+
+        This is the integration point for live OTB mode and other programmatic
+        sources — they can build MarketCase objects directly and reuse the
+        full pipeline without serializing to a temp markets.json file.
+
+        Args:
+            cases: Tuple of MarketCase objects to process.
+            mode: "live" or "replay".
+            fixtures_dir: Directory for fixture files.
+            case_id: If set, run only this case.
+            run_id: Optional custom run_id. Auto-generated if None.
+            **extra_kwargs: Passed through to stage functions.
+
+        Returns:
+            PipelineRun with results for all processed cases.
+        """
+        run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        started_at = datetime.now(timezone.utc)
+        logger.info("[run %s] Running %d cases (mode=%s)", run_id, len(cases), mode)
+
+        if case_id:
+            cases = tuple(c for c in cases if c.case_id == case_id)
+            if not cases:
+                raise ValueError(f"Case '{case_id}' not found.")
+
+        # Emit manifest validation trace
+        _emit_manifest_validation_trace(
+            input_path="(otb-api)",
+            schema_version="otb-live-v1",
+            case_count=len(cases),
+            case_ids=[c.case_id for c in cases],
+            mode=mode,
+        )
+
+        # Run stages per case
+        results: list[PipelineContext] = []
+        for i, market_case in enumerate(cases):
+            logger.info(
+                "[run %s] Case %d/%d: %s",
+                run_id, i + 1, len(cases), market_case.case_id,
+            )
+            ctx = PipelineContext(case=market_case)
+            ctx = _run_case_with_trace(ctx, self._stages, mode, fixtures_dir,
+                                       run_id, i, len(cases), extra_kwargs)
             results.append(ctx)
 
         run = PipelineRun(
@@ -156,6 +223,175 @@ class PipelineRunner:
 
 
 # ── Internal helpers ────────────────────────────────────────────────
+
+def _run_case_with_trace(
+    ctx: PipelineContext,
+    stages: list[Callable],
+    mode: str,
+    fixtures_dir: str,
+    run_id: str,
+    case_index: int,
+    total_cases: int,
+    extra_kwargs: dict[str, Any],
+) -> PipelineContext:
+    """Run all stages for a single case, wrapped in a Langfuse root trace.
+
+    Uses Langfuse v3's start_as_current_observation with as_type="span"
+    to create a root trace. All stage spans (created by @step decorator)
+    and LLM generation spans (created by langfuse.openai.OpenAI) nest under it.
+    """
+    try:
+        from src.observability.tracing import get_langfuse_client
+        client = get_langfuse_client()
+    except Exception:
+        client = None
+
+    if client is None:
+        # No Langfuse — run stages directly
+        for stage_fn in stages:
+            if ctx.terminal:
+                logger.info(
+                    "[%s] Pipeline short-circuited at stage '%s': %s",
+                    ctx.case.case_id, ctx.stage, ctx.terminal_reason,
+                )
+                break
+            ctx = stage_fn(ctx, mode=mode, fixtures_dir=fixtures_dir, **extra_kwargs)
+        return ctx
+
+    # ── Run with Langfuse root trace ──
+    case_id = ctx.case.case_id
+    with client.start_as_current_observation(
+        name=f"resolve/{case_id}",
+        as_type="span",
+        input={
+            "case_id": case_id,
+            "title": ctx.case.question_data.title,
+            "run_id": run_id,
+            "case_index": f"{case_index + 1}/{total_cases}",
+            "mode": mode,
+        },
+    ):
+        # ── Stage 1: Validation span (captures the validated case input) ──
+        _emit_validation_span(client, ctx, mode)
+
+        for stage_fn in stages:
+            if ctx.terminal:
+                logger.info(
+                    "[%s] Pipeline short-circuited at stage '%s': %s",
+                    case_id, ctx.stage, ctx.terminal_reason,
+                )
+                break
+            ctx = stage_fn(ctx, mode=mode, fixtures_dir=fixtures_dir, **extra_kwargs)
+
+        # Update root span with final output
+        try:
+            output_meta = {
+                "run_id": run_id,
+                "terminal": ctx.terminal,
+                "terminal_reason": ctx.terminal_reason,
+            }
+            if ctx.resolution:
+                output_meta["recommendation"] = ctx.resolution.recommendation
+                output_meta["confidence"] = ctx.resolution.confidence
+                output_meta["decision_path"] = ctx.resolution.path
+            if ctx.verdict:
+                output_meta["verdict"] = ctx.verdict.verdict
+            if ctx.normalized:
+                output_meta["observed_value"] = ctx.normalized.value
+                output_meta["observed_unit"] = ctx.normalized.unit
+            client.update_current_span(output=output_meta)
+        except Exception:
+            pass
+
+    return ctx
+
+
+def _emit_validation_span(client, ctx: PipelineContext, mode: str) -> None:
+    """Emit a stage/validate span showing the case passed input validation.
+
+    Captures the raw question data and ancillary data so operators can see
+    exactly what the resolver was given — before any extraction or retrieval.
+    """
+    try:
+        qd = ctx.case.question_data
+        anc = ctx.case.ancillary_data or ""
+
+        # Build input dict outside the context manager to isolate any dict-construction
+        # errors from the span lifecycle
+        span_input = {
+            "case_id": ctx.case.case_id,
+            "title": qd.title,
+            "proposal_time": str(qd.proposal_time),
+            "question_id": qd.question_id,
+            "market_id": qd.market_id,
+            "outcomes": {
+                "p1": qd.outcomes.p1,
+                "p2": qd.outcomes.p2,
+                "p3": qd.outcomes.p3,
+                "p4": qd.outcomes.p4,
+            },
+            "ancillary_data": anc[:1000] + ("..." if len(anc) > 1000 else ""),
+            "polymarket_url": ctx.case.polymarket_url or "",
+            "proposal_tx_hash": ctx.case.proposal_tx_hash or "",
+            "mode": mode,
+        }
+
+        with client.start_as_current_observation(
+            name="stage/validate",
+            as_type="span",
+            input=span_input,
+        ):
+            client.update_current_span(output={
+                "valid": True,
+                "stage": "validate",
+                "terminal": False,
+            })
+    except Exception as e:
+        logger.debug("Validation span skipped: %s", e)
+
+
+def _emit_manifest_validation_trace(
+    input_path: str | Path,
+    schema_version: str,
+    case_count: int,
+    case_ids: list[str],
+    mode: str,
+) -> None:
+    """Emit a top-level trace showing manifest validation passed.
+
+    This is a separate trace (not per-case) capturing the overall manifest
+    load: schema version, case count, and all case IDs.
+    """
+    try:
+        from src.observability.tracing import get_langfuse_client
+        client = get_langfuse_client()
+        if client is None:
+            return
+
+        with client.start_as_current_observation(
+            name="manifest/validate",
+            as_type="span",
+            input={
+                "input_path": str(input_path),
+                "mode": mode,
+            },
+        ):
+            try:
+                from langfuse import get_client as _get_client
+                _lc = _get_client()
+                if _lc:
+                    _lc.update_current_span(output={
+                        "stage": "validate",
+                        "terminal": False,
+                        "schema_version": schema_version,
+                        "case_count": case_count,
+                        "case_ids": case_ids,
+                    })
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
     """Load a YAML config file."""
