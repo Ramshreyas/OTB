@@ -17,13 +17,10 @@ build/
 htmlcov/
 
 # Fixtures (captured data snapshots)
-# Keep committed — data/fixtures/ is the deterministic grading anchor
+data/fixtures/
 
 # Output
-output/results.json
-output/otb/otb_cases/*.json
-output/otb/raw_otb_payloads/*.json
-output/otb/results_*.json
+output/
 
 # Docker volumes
 pgdata/
@@ -42,4 +39,3 @@ minio_data/
 # OS
 .DS_Store
 Thumbs.db
-output/demo_unclear_results.json
