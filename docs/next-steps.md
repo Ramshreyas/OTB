@@ -53,10 +53,10 @@ Today: Wunderground API → Playwright → `unclear`. Production adds:
 - **Degraded mode.** If >50% of live retrievals are failing, auto-switch to replay-only mode and alert. Don't keep hammering a broken API.
 
 ### Priority queueing
-Not all markets are equal. A market settling in 2 hours needs resolution before a backtest case, and a $1M market matters more than a $100 market:
+Not all markets are equal. A market settling in 2 hours needs resolution before a backtest case, and a \$1M market matters more than a \$100 market:
 - **Priority score:** Composite of settlement deadline proximity (primary) × market size (secondary). Formula: `priority = deadline_urgency * log(market_size_usd + 1)`. Logarithmic scaling on size prevents a single whale market from starving everything else; urgency still dominates as the deadline approaches.
 - **Market size source:** OTB API returns bond size or proposed stake per request. Normalize to USD equivalent. If unavailable, default to median market size.
-- **Priority levels:** `critical` (settlement < 1h OR size > $100K with settlement < 4h), `high` (< 6h), `normal` (< 24h), `background` (backtesting/historical).
+- **Priority levels:** `critical` (settlement < 1h OR size > \$100K with settlement < 4h), `high` (< 6h), `normal` (< 24h), `background` (backtesting/historical).
 - **Starvation prevention:** Minimum processing guarantee per level — e.g., at least 10% of cycles go to background cases even when critical queue is full. Aging booster: a background case waiting >24h gets an urgency bump.
 - **OTB API polling** feeds into the queue with priority derived from proposal time, settlement deadline, and bond size.
 
