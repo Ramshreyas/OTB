@@ -230,62 +230,6 @@
   .badge.blue { background: #152238; color: var(--accent); }
   .badge.purple { background: #261b38; color: var(--purple); }
 
-  /* ── Bottom Panel: Observability ── */
-  .obs-panel {
-    height: 420px;
-    min-height: 200px;
-    border-top: 1px solid var(--border);
-    background: var(--panel-bg);
-    display: flex;
-    flex-direction: column;
-  }
-  .obs-header {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 24px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .obs-dot {
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    background: var(--orange);
-    box-shadow: 0 0 8px var(--orange);
-    animation: pulse 2s infinite;
-    flex-shrink: 0;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-  .obs-header span {
-    font-size: 13px; font-weight: 600; color: var(--text);
-  }
-  .obs-header small {
-    font-size: 11px; color: var(--text-muted);
-  }
-  .obs-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px 24px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 12px;
-    line-height: 1.8;
-    counter-reset: trace;
-  }
-  .obs-body .trace-line {
-    color: var(--text-muted);
-    opacity: 0;
-    transform: translateY(6px);
-    animation: trace-in 0.35s ease-out forwards;
-  }
-  @keyframes trace-in {
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .trace-line .tl-stage { color: var(--accent); font-weight: 500; }
-  .trace-line .tl-ts { color: var(--text-muted); }
-  .trace-line .tl-data { color: var(--green); }
-  .trace-line .tl-gate { color: var(--yellow); }
-  .trace-line .tl-warn { color: var(--orange); }
 </style>
 </head>
 <body>
@@ -999,17 +943,6 @@
 
 </div><!-- /top -->
 
-<!-- ═══════════ BOTTOM PANEL: Observability Trace ═══════════ -->
-<div class="obs-panel">
-  <div class="obs-header">
-    <span class="obs-dot"></span>
-    <span>Observability Trace</span>
-    <small>— each stage logs its telemetry as the pipeline runs</small>
-  </div>
-  <div class="obs-body" id="obs-body">
-  </div>
-</div>
-
 <script>
 // ── Design spec (edit this JSON to iterate on the pipeline design) ──
 const PIPELINE = [
@@ -1123,7 +1056,6 @@ const PIPELINE = [
 
 // ── Build stepper from PIPELINE ──
 const stepper = document.getElementById('stepper');
-const obsBody = document.getElementById('obs-body');
 const main = document.getElementById('main');
 const details = document.querySelectorAll('.stage-detail');
 
@@ -1151,17 +1083,6 @@ function selectStage(idx) {
   const target = document.getElementById('detail-' + PIPELINE[idx].id);
   if (target) target.classList.add('visible');
 
-  // Render trace: all stages 0..idx
-  obsBody.innerHTML = '';
-  for (let i = 0; i <= idx; i++) {
-    const div = document.createElement('div');
-    div.className = 'trace-line';
-    div.innerHTML = PIPELINE[i].trace.map(([cls, text]) =>
-      cls ? `<span class="${cls}">${text}</span>` : text
-    ).join('');
-    obsBody.appendChild(div);
-  }
-  obsBody.scrollTop = obsBody.scrollHeight;
   main.scrollTop = 0;
 }
 
