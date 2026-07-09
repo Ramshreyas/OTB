@@ -71,10 +71,16 @@ python demo/prompt_regression.py --force
 
 ### 1.2 Open `src/orchestration/steps.py`
 
-Scroll to the `@step` decorator (line ~28):
+Scroll to the `step()` function definition (line ~28):
 
 ```python
-@step(name="compose_spec", stage_num=2, on_error="unclear")
+def step(
+    name: str,
+    stage_num: int = 0,
+    *,
+    on_error: str = "raise",
+):
+    """Decorator that wraps a pipeline stage function with telemetry."""
 ```
 
 | What to point at | Talk track |
@@ -83,7 +89,18 @@ Scroll to the `@step` decorator (line ~28):
 | `_trace_in_langfuse()` | "Uses Langfuse v3's `start_as_current_observation`. Auto-creates spans with rich input/output — the trace is self-documenting." |
 | `_build_stage_input()` / `_build_stage_output()` | "Each stage captures exactly what it received and produced. The retrieve stage span shows station_code, measurement, window. The normalize span shows completeness, quality flags. An operator never has to grep logs." |
 
-> **Narrative:** "The `@step` decorator is where observability meets the pipeline. We didn't bolt tracing on afterward — it's a property of every stage, for free. Add a new stage, and it's automatically traced."
+Then open `src/orchestration/runner.py` and scroll to `_resolve_stage_fn()` (line ~318):
+
+```python
+@step(name=stage_name, stage_num=stage_num, on_error=on_error)
+def _wrapped(ctx: PipelineContext, **kwargs: Any) -> PipelineContext:
+    return _call_stage(raw_fn, ctx, **kwargs)
+```
+
+| What to point at | Talk track |
+|---|---|
+| `on_error` from YAML | "The `on_error` from `pipeline.yaml` flows directly into the decorator. `unclear` means: if this stage throws, mark the case unresolvable. No guessing." |
+| The wrapping pattern | "Each raw function from the YAML is wrapped at runtime with the `@step` decorator. That's how every stage gets tracing automatically — define it in YAML, run it, it's traced." |
 
 ### 1.3 Open `src/orchestration/runner.py`
 
@@ -95,7 +112,7 @@ Scroll to `_run_case_with_trace()` (line ~232):
 | The `for stage_fn in stages` loop | "Stages run sequentially. If any stage sets `ctx.terminal=True`, the pipeline short-circuits — no wasted work." |
 | `_call_stage()` | "Adaptation layer — each stage function has a known signature. The runner extracts the right fields from context and stores results in the right slot. Type-safe, not stringly-typed." |
 
-> **Narrative:** "That's the architecture. YAML defines what runs, the decorator traces it, the runner sequences it. The rest is business logic in each stage."
+> **Narrative:** "The `@step` decorator is where observability meets the pipeline. It's defined in `steps.py`, applied in `runner.py` from the YAML config. We didn't bolt tracing on afterward — it's a property of every stage, for free. Define a new stage in YAML, and it's automatically traced."
 
 ---
 
