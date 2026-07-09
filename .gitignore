@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 dist/
 build/
+*.egg-info/
 
 # Environment
 .env
@@ -16,12 +17,28 @@ build/
 htmlcov/
 
 # Fixtures (captured data snapshots)
-data/fixtures/
+# Keep committed — data/fixtures/ is the deterministic grading anchor
 
 # Output
-output/
+output/results.json
+output/otb/otb_cases/*.json
+output/otb/raw_otb_payloads/*.json
+output/otb/results_*.json
+
+# Docker volumes
+pgdata/
+ch_data/
+ch_logs/
+redis_data/
+minio_data/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

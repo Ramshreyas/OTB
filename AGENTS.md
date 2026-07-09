@@ -8,13 +8,19 @@ Building an agentic resolver for weather prediction markets that operates within
 .
 ├── AGENTS.md              # This file — project context for pi
 ├── README.md              # Setup, install, usage for evaluators
-├── OTB Weather Market Resolution Case Study.md   # Original brief
-├── resolve.py             # Entry point: ingest, resolve, output
+├── resolve.py             # Entry point: replay, live, capture-fixtures
+├── resolve_otb.py         # Entry point: live OTB API polling (bonus)
+├── evaluate.py            # Evaluation against gold answers
 ├── requirements.txt       # Python dependencies
+├── pyproject.toml         # Project config + pytest settings
+├── docker-compose.yml     # Langfuse + LiteLLM observability stack
+├── litellm_config.yaml    # LiteLLM model routing
+├── .env                   # Environment variables and secrets
+│
 ├── data/
 │   ├── markets.json       # Input manifest with market cases
 │   ├── fixtures/          # Captured weather-source snapshots for replay
-│   └── schema/            # Input/output JSON schemas
+│   └── schema/            # Input JSON schema
 │
 │   Fixtures are the deterministic grading anchor — replay mode uses them
 │   instead of live web calls. Each fixture is a captured raw or normalized
@@ -22,38 +28,59 @@ Building an agentic resolver for weather prediction markets that operates within
 │     • Wunderground → reduced observation payload from exact station URL
 │       and date (daily high/low, timestamps, metadata)
 │     • NOAA → captured monthly summary payload
-│   Cases map to fixtures by case_id, a small fixture manifest, or an
-│   optional fixture_path field. The markets.json manifest must NOT embed
+│   Cases map to fixtures by case_id. The markets.json manifest must NOT embed
 │   raw source snapshots.
+│
 ├── gold_visible/
 │   └── answers.json       # Expected answers for visible cases
+│
+├── config/
+│   └── pipeline.yaml      # Pipeline stage definitions + LLM config
+│
+├── scripts/
+│   └── seed_langfuse_prompts.py  # Seed Langfuse prompt registry
+│
+├── docs/
+│   ├── case-study.md           # Original case study brief
+│   ├── design.md               # Architecture + pipeline design docs
+│   ├── implementation.md       # Detailed implementation plan
+│   ├── live-retrieval-fix.md   # Known Wunderground live retrieval issues
+│   ├── observability-demo.md   # Langfuse observability walkthrough
+│   └── design.html             # Visual pipeline Mermaid diagram
+│
 ├── src/
 │   ├── validation/        # Schema validation, market case loading
-│   ├── retrieval/         # Data fetching (Wunderground API, Playwright fallback)
-│   ├── normalization/     # Unit conversion, precision, timezone handling
-│   ├── reconciliation/    # Evidence-to-rules matching
-│   ├── decision/          # p1/p2/p3/p4/unclear + confidence
-│   ├── models/            # LLM provider abstraction, quorum logic
+│   ├── retrieval/         # Data fetching (Wunderground API, Playwright, NOAA)
+│   ├── normalization/     # Unit conversion, precision, quality checks
+│   ├── reconciliation/    # Finality gate, rule parsing, comparison
+│   ├── decision/          # Deterministic resolver + LLM reviewer
+│   ├── orchestration/     # Pipeline runner, context, config
+│   ├── observability/     # Langfuse tracing, structured logging
+│   ├── otb/               # OTB API client + market transformation
 │   └── output/            # Structured JSON formatting
+│
 ├── tests/
 │   ├── conftest.py          # Shared fixtures (paths, helper factories)
-│   └── validation/
-│       ├── test_schema.py    # JSON Schema validation tests
-│       ├── test_loader.py    # Manifest loading tests
-│       └── test_models.py    # Immutability and model tests
-└── PROGRESS.md            # Work tracking, not for AI context
+│   ├── validation/          # Schema, loader, models tests
+│   ├── retrieval/           # Retrieval and spec tests
+│   └── otb/                 # OTB transform tests
+│
+└── output/
+    ├── results.json          # Last resolver run output
+    └── otb/                  # OTB live mode output (manifests, raw payloads)
 ```
 
 ## Technology stack
 
 - **Language:** Python 3.11+
 - **Scraping:** Wunderground internal API as primary path; Playwright (headless browser) as fallback when API is blocked or returns incomplete data
-- **LLM provider:** Provider-agnostic — use a quorum of providers/models for reconciliation and decision steps once architecture is settled (not yet implemented)
-- **Package manager:** pip / venv
+- **LLM provider:** LiteLLM proxy (provider-agnostic) — uses DeepSeek by default, configurable via `litellm_config.yaml`
+- **Observability:** Langfuse for prompt management and trace visualization; structured logging via `structlog`
+- **Package manager:** pip / venv (with `pyproject.toml`)
 
 ## Architecture — separation of concerns
 
-The resolver must have clear boundaries. Do NOT build this as one giant monolithic prompt.
+The resolver uses a 7-stage linear pipeline: **Validation → Spec Composition → Retrieval → Normalization → Reconciliation → Decision → Output**. See `docs/design.md` for detailed Mermaid diagrams.
 
 ### 1. Retrieval (`src/retrieval/`)
 
@@ -64,15 +91,15 @@ Fetches raw weather data from the authoritative source specified in the market's
 - Any errors or fallback paths taken
 
 **Wunderground strategy:**
-- Primary: Reverse-engineer the station history API endpoint (e.g., `/history/daily/...` JSON endpoint)
-- Fallback: Playwright headless browser navigates to the station page, toggles correct units (C/F), extracts observation table
-- Record which path was used in source trace
+- Primary: Direct HTTP to Wunderground station history JSON endpoint
+- Fallback: Playwright headless browser → navigate station page → toggle correct unit → extract observation table
+- Replay: Load pre-captured fixture by case_id from `data/fixtures/`
 
 **Key pitfalls:**
 - City name ≠ station. "Denver" resolves to Buckley SFB (KBKF) in Aurora. "Seoul" resolves to Incheon Intl (RKSI). Always verify against the URL in ancillary data, not city labels.
-- Wunderground UI units are per-session toggles. The API or scraper must explicitly request the correct unit.
+- Wunderground UI units are per-session toggles. The scraper must explicitly request the correct unit.
 - Daily high/low observations are distinct from intraday point readings.
-- Data can change before finality; after first next-day datapoint, revisions are ignored per market rules.
+- Cookie consent popups may block Playwright interactions — see `docs/live-retrieval-fix.md`.
 
 ### 2. Normalization (`src/normalization/`)
 
@@ -81,6 +108,7 @@ Transforms raw source data into market-comparable values:
 - Round to the precision specified in market rules (whole degrees for Wunderground temp markets)
 - Handle local-day boundaries (not UTC) — the market date is in the station's local timezone
 - Detect and flag missing observations, partial intraday data masquerading as daily values
+- Quality checks and anomaly detection
 - For precipitation markets: 2-decimal precision, monthly totals from NOAA
 
 ### 3. Reconciliation (`src/reconciliation/`)
@@ -97,8 +125,16 @@ Matches normalized evidence to market rules:
 Produces the final structured output:
 - `recommendation`: p1, p2, p3, p4, or unclear
 - `confidence`: 0.0 to 1.0 (not binary — reflect genuine uncertainty)
+- Deterministic mapping for most cases; LLM reviewer (via Langfuse prompts) for borderline confidence (< 0.85)
 - Conservative default: a wrong confident p1/p2 is worse than returning unclear on an ambiguous case
-- Optionally uses LLM quorum for edge cases (future)
+
+### 5. OTB Live Mode (`src/otb/`, `resolve_otb.py`)
+
+Bonus extension that polls the OTB Oracle API for live proposed Weather markets and runs the same resolver pipeline. Features:
+- Fetch + transform OTB API items into `MarketCase` objects
+- Run through the same 7-stage pipeline
+- Continuous polling mode with graceful shutdown
+- Persist manifests and raw payloads for replay/debugging
 
 ## Input/output contract
 
@@ -106,7 +142,7 @@ Produces the final structured output:
 
 Each market object has:
 - `case_id`, `polymarket_url`, `proposal_tx_hash`
-- `question_data`: `question_id`, `market_id`, `title`, `proposal_time`, `outcomes` (p1/p2/p3/p4 labels)
+- `question_data`: `question_id`, `market_id`, `title`, `proposal_time`, `end_date_iso`, `outcomes` (p1/p2/p3/p4 labels)
 - `ancillary_data`: Wunderground station URL, unit, precision, finality rules, bulletin board info
 
 ### Output: structured JSON per case
@@ -136,14 +172,23 @@ python resolve.py --input data/markets.json --fixtures data/fixtures
 # Live mode (fetches from Wunderground, records snapshots)
 python resolve.py --input data/markets.json --fixtures data/fixtures --live
 
-# Running a single case in live mode
+# Running a single case
 python resolve.py --input data/markets.json --fixtures data/fixtures --live --case-id tokyo_low_2026_06_01_20c
-
-# Capture fixtures (replay prep — records live responses into fixtures/)
-python resolve.py --capture-fixtures --input data/markets.json
 
 # Run evaluation against gold answers
 python evaluate.py --predictions output/results.json --gold gold_visible/answers.json
+
+# OTB Live mode
+python resolve_otb.py --max-markets 10
+python resolve_otb.py --poll --poll-interval 300 --max-markets 20
+
+# Observability stack
+docker compose up -d
+python scripts/seed_langfuse_prompts.py
+
+# Tests
+pytest tests/ -v
+pytest tests/ -v -m "not llm"
 ```
 
 ## Design principles
@@ -168,8 +213,8 @@ python evaluate.py --predictions output/results.json --gold gold_visible/answers
 
 - **Python style:** Follow PEP 8. Type hints on all public functions. Docstrings in Google style.
 - **Error handling:** Never swallow exceptions silently. Capture in source trace as errors. Degrade to `unclear` when retrieval fails, don't guess.
-- **Logging:** Use `logging` module. Structured log records (JSON lines for production, human-readable for dev).
-- **Configuration:** Environment variables for API keys (`WUNDERGROUND_API_KEY` if applicable, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). No hardcoded secrets.
+- **Logging:** Use `structlog` for structured log records (JSON lines for production, human-readable for dev).
+- **Configuration:** Environment variables for API keys (`DEEPSEEK_API_KEY`, `LANGFUSE_PUBLIC_KEY`, etc.). No hardcoded secrets.
 - **Testing:** pytest. Test each layer independently (retrieval with mocked HTTP, normalization with known fixtures, reconciliation with edge cases). Tests are organized under `tests/` mirroring the `src/` structure. Run with:
   ```bash
   # All tests

@@ -1,0 +1,52 @@
+{
+  "observations": [
+    {
+      "valid_time_gmt": 1780207200,
+      "temp": 68
+    },
+    {
+      "valid_time_gmt": 1780228800,
+      "temp": 70
+    },
+    {
+      "valid_time_gmt": 1780250400,
+      "temp": 72
+    }
+  ],
+  "extracted_value": {
+    "value": 72.0,
+    "unit": "F",
+    "field": "temp",
+    "aggregation": "max"
+  },
+  "finality": {
+    "status": "confirmed",
+    "first_next_day_ts": "2026-06-01T00:00:00+00:00"
+  },
+  "source_trace": [
+    {
+      "url": "https://api.weather.com/v1/location/KBKF:9:US/observations/historical.json?apiKey=6532d6454b8aa370768e63d6ba5a832e&units=e&startDate=20260531&endDate=20260531",
+      "http_status": 200,
+      "response_size_bytes": 2,
+      "latency_ms": 0.012874603271484375,
+      "path": "api",
+      "retry_count": 0,
+      "guardrail_flags": [],
+      "error": null,
+      "timestamp": "2026-07-09T11:06:20.819808"
+    },
+    {
+      "url": "https://api.weather.com/v1/location/KBKF:9:US/observations/historical.json?apiKey=6532d6454b8aa370768e63d6ba5a832e&units=e&startDate=20260601&endDate=20260601",
+      "http_status": 200,
+      "response_size_bytes": 2,
+      "latency_ms": 0.007867813110351562,
+      "path": "api",
+      "retry_count": 0,
+      "guardrail_flags": [
+        "finality_check"
+      ],
+      "error": null,
+      "timestamp": "2026-07-09T11:06:20.819880"
+    }
+  ]
+}
