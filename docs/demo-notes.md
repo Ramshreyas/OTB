@@ -69,38 +69,59 @@ python demo/prompt_regression.py --force
 
 > **Narrative:** "This is the entire pipeline config. If we need to add a new stage — say, a post-resolution audit check — it's one entry in this YAML file. The runner picks it up automatically."
 
-### 1.2 Open `src/orchestration/steps.py`
+### 1.2 How a YAML stage becomes a traced function
 
-Scroll to the `step()` function definition (line ~28):
+Open `src/orchestration/runner.py`, scroll to `_resolve_stage_fn()` (line ~402). This is where `pipeline.yaml` meets the tracing infrastructure:
 
 ```python
-def step(
-    name: str,
-    stage_num: int = 0,
-    *,
-    on_error: str = "raise",
-):
-    """Decorator that wraps a pipeline stage function with telemetry."""
+def _resolve_stage_fn(stage_def: dict[str, Any]) -> Callable:
+    module_path = stage_def["module"]       # e.g., "src.retrieval.spec"
+    function_name = stage_def["function"]   # e.g., "compose_retrieval_spec"
+    on_error = stage_def.get("on_error", "raise")
+
+    mod = importlib.import_module(module_path)
+    raw_fn = getattr(mod, function_name)
+
+    from src.orchestration.steps import step
+    stage_name = stage_def.get("name", function_name)
+    stage_num = stage_def.get("stage_num", 0)
+
+    @step(name=stage_name, stage_num=stage_num, on_error=on_error)
+    def _wrapped(ctx, **kwargs):
+        return _call_stage(raw_fn, ctx, **kwargs)
+
+    return _wrapped
 ```
 
 | What to point at | Talk track |
 |---|---|
-| The decorator signature | "Every stage function gets wrapped with this decorator. It creates a Langfuse span, times execution, catches exceptions, and logs structured entry/exit. ~30 lines." |
-| `_trace_in_langfuse()` | "Uses Langfuse v3's `start_as_current_observation`. Auto-creates spans with rich input/output — the trace is self-documenting." |
-| `_build_stage_input()` / `_build_stage_output()` | "Each stage captures exactly what it received and produced. The retrieve stage span shows station_code, measurement, window. The normalize span shows completeness, quality flags. An operator never has to grep logs." |
+| `importlib.import_module` | "Reads the `module` and `function` from YAML and resolves them at startup. Add a new stage file, add one line to `pipeline.yaml`, it's picked up." |
+| `@step(name=..., on_error=on_error)` | "The `on_error` from YAML flows directly into the decorator. `unclear` means: if this stage throws, mark the case unresolvable. No guessing." |
+| `_call_stage(raw_fn, ctx, **kwargs)` | "Adaptation layer — each stage function has a known signature. The runner extracts the right fields from context and stores results in the right slot." |
 
-Then open `src/orchestration/runner.py` and scroll to `_resolve_stage_fn()` (line ~318):
+Now open `src/orchestration/steps.py`, scroll to `_trace_in_langfuse()` (line ~84). This is what `@step` calls under the hood:
 
 ```python
-@step(name=stage_name, stage_num=stage_num, on_error=on_error)
-def _wrapped(ctx: PipelineContext, **kwargs: Any) -> PipelineContext:
-    return _call_stage(raw_fn, ctx, **kwargs)
+def _trace_in_langfuse(name, ctx, fn, deps):
+    with client.start_as_current_observation(
+        name=f"stage/{name}",
+        as_type="span",
+        input=_build_stage_input(name, ctx, deps),
+    ):
+        result = fn(ctx, **deps)
+        client.update_current_span(
+            output=_build_stage_output(name, result)
+        )
+        return result
 ```
 
 | What to point at | Talk track |
 |---|---|
-| `on_error` from YAML | "The `on_error` from `pipeline.yaml` flows directly into the decorator. `unclear` means: if this stage throws, mark the case unresolvable. No guessing." |
-| The wrapping pattern | "Each raw function from the YAML is wrapped at runtime with the `@step` decorator. That's how every stage gets tracing automatically — define it in YAML, run it, it's traced." |
+| `start_as_current_observation(as_type="span")` | "Creates a span that nests under the root trace. Every stage automatically appears in the Langfuse waterfall." |
+| `_build_stage_input()` | "Each stage captures what it received — the compose_spec span shows the title + ancillary_data, the retrieve span shows station_code + measurement + window, the normalize span shows completeness + quality flags." |
+| `_build_stage_output()` | "Each stage captures what it produced. The trace is fully self-documenting. An operator never has to grep logs." |
+
+> **Narrative:** "The chain is: YAML defines what runs → `_resolve_stage_fn` wraps it with `@step` → `_trace_in_langfuse` creates the span. Define a new stage in `pipeline.yaml`, and it's automatically traced. The manual `_emit_validation_span` you might see in the runner is the exception — validation happens before the stage loop. Everything else gets this for free."
 
 ### 1.3 Open `src/orchestration/runner.py`
 
