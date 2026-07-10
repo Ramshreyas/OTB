@@ -233,7 +233,7 @@
 <main id="main-pipeline">
 
   <!-- ═══ Intro ═══ -->
-  <div class="intro">
+  <div class="intro" id="intro-blurb">
     <strong>OTB Weather Market Resolver</strong> — given a prediction market case (Polymarket URL, ancillary data with Wunderground station rules), retrieves public weather evidence, reconciles it against market rules, and returns <strong>p1</strong> (No), <strong>p2</strong> (Yes), <strong>p3</strong> (50/50), <strong>p4</strong> (Too Early), or <strong>unclear</strong>.<br><br>
     <strong>Two entry points, one pipeline:</strong> <code>resolve.py</code> processes a <code>markets.json</code> manifest (replay or live). <code>resolve_otb.py</code> polls the OTB Oracle API for live proposed Weather markets and runs the same resolver pipeline — paper-proposing recommendations without affecting settlement.<br><br>
     <strong>Design principles:</strong> Source authority is explicit (station URL, never city name). Units are verified, never assumed. Conservatism over confidence — a wrong confident answer is worse than <code>unclear</code>. Every decision is traceable via Langfuse spans.
@@ -766,6 +766,9 @@ function selectStage(items, stepperId, mainId, idx) {
   main.querySelectorAll('.stage-detail').forEach(d => d.classList.remove('visible'));
   const target = document.getElementById('detail-' + items[idx].id);
   if (target) target.classList.add('visible');
+  // Show intro blurb only on first stage, hide otherwise
+  const intro = main.querySelector('#intro-blurb');
+  if (intro) intro.style.display = (idx === 0) ? '' : 'none';
   main.scrollTop = 0;
 }
 
