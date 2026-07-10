@@ -474,13 +474,22 @@
 
     <div class="section">
       <h3>Output — ReconciliationVerdict</h3>
+      <p>The bridge between "what the data says" and "what the answer should be." Each field answers one question an operator debugging a resolution would ask:</p>
       <table class="gate-table">
-        <tr><th>Field</th><th>Values</th></tr>
-        <tr><td>verdict</td><td>Yes | No | p3_tie | p4_too_early | unclear</td></tr>
-        <tr><td>gate</td><td>finality | quality | comparison</td></tr>
-        <tr><td>operator + threshold</td><td>The parsed rule that was applied</td></tr>
-        <tr><td>confidence_penalties</td><td>List of {reason, amount} from quality flags</td></tr>
+        <tr><th>Field</th><th>Question it answers</th><th>Values</th></tr>
+        <tr><td>verdict</td><td>What should we tell the market?</td><td>Yes → p2 | No → p1 | p3_tie | p4_too_early | unclear</td></tr>
+        <tr><td>gate</td><td>Which check produced this verdict?</td><td>finality (too early) | quality (data incomplete) | comparison (reached the threshold check)</td></tr>
+        <tr><td>operator + threshold</td><td>What rule did we compare against?</td><td>e.g., gte ≥ 29°C | exact == 20°C | range ∈ [68, 69]</td></tr>
+        <tr><td>confidence_penalties</td><td>What reduced certainty from the quality gate?</td><td>List of {reason, amount}, e.g., partial_data: -0.1</td></tr>
       </table>
+      <p style="margin-top:8px;">These are reconciliation-layer penalties only. Confidence also factors in retrieval path (API=0.95, Playwright=0.85, Replay=0.90), normalization quality flags (-0.08 each), and completeness (&lt;75% = -0.10). Floor: 0.50.</p>
+
+      <details class="annotation">
+        <summary>Example — tracing a resolution from verdict</summary>
+        <div class="annot-body">
+          <p>"Case returned p2 at 0.80 confidence": verdict=Yes (threshold met), gate=comparison (passed finality and quality), operator=gte ≥ 29, penalty=partial_data: -0.1. Retrieval was API (base 0.95), normalization had one quality flag (-0.08). Total: 0.95 - 0.1 - 0.08 = 0.77 → floor keeps at 0.77. The entire decision fits in one table row.</p>
+        </div>
+      </details>
     </div>
   </div>
 
