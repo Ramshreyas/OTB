@@ -451,7 +451,7 @@
 
     <div class="section">
       <h3>Gate 3: Parse Rules & Compare</h3>
-      <p>Extract operator and threshold from question title (regex, not LLM — patterns are constrained). Apply bracket/tie rules from <code>res_data</code> in ancillary data.</p>
+      <p>Extract operator and threshold from question title (regex — patterns are constrained and fast). Apply bracket/tie rules from <code>res_data</code> in ancillary data.</p>
       <table class="gate-table">
         <tr><th>Question pattern</th><th>Operator</th><th>Threshold</th></tr>
         <tr><td>"be 20°C on June 1?"</td><td>exact (==)</td><td>20</td></tr>
@@ -460,6 +460,15 @@
         <tr><td>"be between 68-69°F?"</td><td>range (∈)</td><td>[68, 69]</td></tr>
       </table>
       <p style="margin-top:8px;">Comparison is pure math on known numbers. Clear result → <code>Yes</code>/<code>No</code>. Ambiguous boundary → <code>p3: 50/50</code>. Unparseable rules → <code>unclear</code>.</p>
+
+      <details class="annotation">
+        <summary>Why regex-only? Risk of non-standard question titles</summary>
+        <div class="annot-body">
+          <p>Regex works because existing Polymarket weather markets use highly regular patterns — only 4 operators, always "be [threshold] on [date]". For these, regex is faster, deterministic, and not gamed by adversarial wording.</p>
+          <p><strong>Risk:</strong> in a permissionless system, anyone can create a market with a non-standard title (e.g., "Will Tokyo's lowest temperature reach 20 degrees Celsius on the first of June?"). A human reads it instantly, but the current regex-only approach would return <code>unclear</code> — conservative but wrong on a resolvable market.</p>
+          <p><strong>Production fix:</strong> same pattern as the spec extraction stage — regex first (fast, deterministic), LLM fallback when regex fails (flagged in trace, confidence-capped). The LLM path should be rare enough that the cost is negligible.</p>
+        </div>
+      </details>
     </div>
 
     <div class="section">
