@@ -288,7 +288,7 @@
       <ul>
         <li>LLM extracts: station URL, station code, measurement type, aggregation (min/max/sum), unit, precision, timezone, finality window</li>
         <li>Regex fallback if LLM unavailable or returns non-conforming output</li>
-        <li>Station registry enriches with timezone, known quirks, guardrails</li>
+        <li>Station registry enriches with timezone, known quirks, guardrails. Unknown stations log a warning but don't gate — they proceed with LLM-extracted metadata only (no timezone verification, no guardrails). In production, an unrecognized station in a live OTB market would trigger operator escalation.</li>
         <li>Cross-validates against <code>question_data</code> — catches title/ancillary contradictions</li>
       </ul>
     </div>
