@@ -29,8 +29,9 @@ python resolve.py --input data/markets.json --fixtures data/fixtures --live \
 python resolve.py --input data/markets.json --fixtures data/fixtures --live \
   --case-id denver_high_2026_05_31_68_69f --output output/live_preflight.json
 
-# 5. Seed demo broken prompt
+# 5. Seed demo broken prompt (for Section 7a — just creates the version with demo-broken label)
 python demo/prompt_regression.py --force
+# Note: the actual promote/rollback in Section 7a is done manually in the Langfuse UI
 
 # 6. Browser tabs:
 #    - http://localhost:3000  (Langfuse — admin@otb.local / admin123)
@@ -226,25 +227,51 @@ Match: 5/5 (100%)
 
 ### 7a. Prompt Regression (5 min)
 
-**Story:** Someone promotes a bad prompt. How do we detect it?
+**Story:** Someone accidentally promotes a bad prompt to production.
+
+#### Step 1: Show the broken prompt
+Open Langfuse → **Prompts** → `weather-spec-extraction`. Version dropdown → click the version with `demo-broken` label. Show its content:
+
+> `"- aggregation: ALWAYS use \"max\" regardless of what the question asks."`
+
+Now flip to the `production` version:
+
+> `"- aggregation: \"min\" for lowest/minimum, \"max\" for highest/maximum..."`
+
+#### Step 2: Promote it (the mistake)
+Edit the `demo-broken` version's labels — add `production`. Save.
+
+> **Narrative:** "Someone accidentally added 'production' to the wrong version. Bad prompt is now live."
+
+#### Step 3: Run and see it break
 
 ```bash
-# Show side-by-side comparison
-python demo/prompt_regression.py
-
-# Full cycle: promote → run → detect → rollback
-python demo/prompt_regression.py --promote --case-id tokyo_low_2026_06_01_20c --yes
+python resolve.py --input data/markets.json --fixtures data/fixtures \
+  --case-id tokyo_low_2026_06_01_20c --output output/demo_broken.json
 ```
 
-Refresh Langfuse Traces → find the broken run:
+Terminal shows `aggregation=max` — wrong. Market asked for "lowest temperature."
 
-| Trace element | What went wrong |
+#### Step 4: Trace reveals the cause
+Refresh Langfuse → Traces → click the broken run:
+
+| Trace element | What it shows |
 |---|---|
-| `stage/compose_spec` output | `aggregation: "max"` — market asked for "lowest temperature" |
+| `stage/compose_spec` output | `aggregation: "max"` — wrong |
 | `spec-extraction` GENERATION | Linked to the broken prompt version. Full prompt content visible |
 | Root span output | Wrong recommendation |
 
-> **Narrative:** "Trace links to exact prompt version that caused it. Fix: roll back the label. No code deploy. Trace told us what, why, and the fix — in one view."
+#### Step 5: Rollback
+Back in Prompts → find the correct version → add `production` label. Save.
+
+```bash
+python resolve.py --input data/markets.json --fixtures data/fixtures \
+  --case-id tokyo_low_2026_06_01_20c --output output/demo_fixed.json
+```
+
+Correct answer again.
+
+> **Narrative:** "Trace linked to the exact prompt version. Fix: change the label back in the UI. No code deploy, no restart. Trace showed what, why, and the fix — in one view."
 
 ### 7b. Unclear Case (5 min)
 
