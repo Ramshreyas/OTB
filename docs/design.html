@@ -235,6 +235,7 @@
   <!-- ═══ Intro ═══ -->
   <div class="intro">
     <strong>OTB Weather Market Resolver</strong> — given a prediction market case (Polymarket URL, ancillary data with Wunderground station rules), retrieves public weather evidence, reconciles it against market rules, and returns <strong>p1</strong> (No), <strong>p2</strong> (Yes), <strong>p3</strong> (50/50), <strong>p4</strong> (Too Early), or <strong>unclear</strong>.<br><br>
+    <strong>Two entry points, one pipeline:</strong> <code>resolve.py</code> processes a <code>markets.json</code> manifest (replay or live). <code>resolve_otb.py</code> polls the OTB Oracle API for live proposed Weather markets and runs the same resolver pipeline — paper-proposing recommendations without affecting settlement.<br><br>
     <strong>Design principles:</strong> Source authority is explicit (station URL, never city name). Units are verified, never assumed. Conservatism over confidence — a wrong confident answer is worse than <code>unclear</code>. Every decision is traceable via Langfuse spans.
   </div>
 
@@ -246,8 +247,10 @@
     <div class="section">
       <h3>What it does</h3>
       <ul>
-        <li>Loads <code>markets.json</code> from <code>--input</code>, validates every case against schema</li>
-        <li>Fails fast on malformed cases — no partial processing</li>
+        <li>Two entry points feed the same pipeline:
+          <br><span class="badge blue">resolve.py</span> loads <code>markets.json</code> from <code>--input</code>
+          <br><span class="badge purple">resolve_otb.py</span> fetches live proposed markets from the <a href="https://oracle.api.otb.uma.xyz/requests" style="color:var(--accent)">OTB Oracle API</a>, transforms them into <code>MarketCase</code> objects, and feeds them to <code>PipelineRunner.run_cases()</code></li>
+        <li>Validates every case against the input schema — fails fast on malformed cases, no partial processing</li>
         <li>Each validated case is loaded into an immutable data structure</li>
       </ul>
     </div>
@@ -257,7 +260,7 @@
       <div class="io-row">
         <div class="io-box">
           <div class="io-label">Input</div>
-          <div class="io-value">markets.json (case_id, question_data, ancillary_data)</div>
+          <div class="io-value">markets.json (case_id, question_data, ancillary_data)<br><span style="color:var(--text-muted);font-size:11px;">or OTB API (proposed Weather markets via resolve_otb.py)</span></div>
         </div>
         <div class="io-box">
           <div class="io-label">Output</div>
@@ -559,7 +562,8 @@
 
     <div class="section">
       <h3>Component map</h3>
-      <div class="arch-box"><span class="hl">resolve.py</span>  (CLI entry point)
+      <div class="arch-box"><span class="hl">resolve.py</span>  (markets.json manifest)
+<span class="hl">resolve_otb.py</span>  (OTB Oracle API → live proposed markets)
   │
   ├─ <span class="hl">PipelineRunner</span>  (src/orchestration/runner.py)
   │   ├─ Loads <span class="hl2">config/pipeline.yaml</span>  → resolves stage functions via importlib
