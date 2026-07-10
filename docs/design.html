@@ -296,9 +296,9 @@
     <details class="annotation">
       <summary>Extraction layers — LLM → schema validation → regex → station registry</summary>
       <div class="annot-body">
-        <p><strong>Layer 1: LLM extraction</strong> — single call with structured output schema. The LLM reads ancillary_data as intended: human-readable instructions with embedded URLs, UI navigation tips, and prose finality rules.</p>
+        <p><strong>Layer 1: LLM extraction</strong> — single call with structured output schema. The LLM reads ancillary_data as intended: human-readable instructions with embedded URLs, UI navigation tips, and prose finality rules. It understands negation ("do not use Narita"), context ("use daily high, not intraday"), and intent.</p>
         <p><strong>Layer 2: Schema validation</strong> — every LLM response is validated. Fields must match expected types, URLs must be syntactically valid, measurements must be from known enums.</p>
-        <p><strong>Layer 3: Regex fallback</strong> — deterministic safety net. Matches Wunderground URL patterns, ISO dates, known unit phrases.</p>
+        <p><strong>Layer 3: Regex fallback</strong> — deterministic safety net for LLM unavailability. Matches Wunderground URL patterns, ISO dates, known unit phrases. <span class="badge yellow">Flagged in trace</span> — regex-derived specs are capped at 0.70 confidence and always invoke the reviewer. Regex cannot understand negation or prose context, making it vulnerable to crafted ancillary data. The reviewer + confidence cap + operator visibility mitigate this: a regex extraction on a high-stakes market draws attention.</p>
         <p><strong>Layer 4: Station registry</strong> — resolves bare ICAO codes to full URLs, maps stations to IANA timezones, attaches guardrails (retry guidance, partial-data windows, source lag tolerance).</p>
       </div>
     </details>
