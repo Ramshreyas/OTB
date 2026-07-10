@@ -328,12 +328,12 @@
 
     <div class="section">
       <h3>What it does</h3>
-      <p>Fetches raw weather observations using the <code>RetrievalSpec</code>. Two modes:</p>
+      <p>Fetches raw weather observations using the <code>RetrievalSpec</code>. Dispatches by source type — Wunderground for daily temperature markets, NOAA for monthly precipitation markets. Two modes:</p>
       <ul>
-        <li><span class="badge green">Live</span> — Wunderground API → Playwright headless browser fallback → exhaustion → <code>unclear</code></li>
+        <li><span class="badge green">Live</span> — <strong>Wunderground:</strong> direct API → Playwright headless browser fallback → exhaustion → <code>unclear</code>. <strong>NOAA:</strong> monthly summary API → exhaustion → <code>unclear</code> (no browser fallback — NOAA doesn't require JS rendering).</li>
         <li><span class="badge blue">Replay</span> — loads pre-captured fixture from <code>data/fixtures/</code>. No network calls. Deterministic.</li>
       </ul>
-      <p style="margin-top:8px;">Live mode auto-saves the response as a fixture — the system bootstraps its own determinism for future replay.</p>
+      <p style="margin-top:8px;">Live mode auto-saves the response as a fixture — the system bootstraps its own determinism for future replay. Every retrieval records exact URL, HTTP status, latency, path taken, and any errors in <code>source_trace</code>.</p>
     </div>
 
     <div class="section">
@@ -573,6 +573,7 @@
   ├─ <span class="hl">Stage functions</span>  (resolved from YAML)
   │   ├─ stage/compose_spec  → LLM extraction + regex fallback
   │   ├─ stage/retrieve      → Wunderground API → Playwright → replay
+  │   │                         NOAA monthly API (precip markets)
   │   ├─ stage/normalize     → Unit conversion, precision, quality
   │   ├─ stage/reconcile     → Finality gate → quality gate → comparison
   │   └─ stage/decide        → Deterministic mapping + conditional LLM reviewer
