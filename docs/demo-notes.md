@@ -153,7 +153,7 @@ python resolve.py \
   --case-id denver_high_2026_05_31_68_69f --output output/live_demo.json
 ```
 
-Point out the station mapping: title says "Denver" but the LLM extracts `KBKF` (Buckley SFB, Aurora CO) from the ancillary data URL. The station registry attaches the note: *"Market title says 'Denver' but resolution source is Buckley SFB (KBKF) in Aurora, CO."*
+Point out the station mapping: title says "Denver" but the LLM extracts `KBKF` (Buckley SFB, Aurora CO) from the ancillary data URL. The station registry attaches the note: *"Market title says 'Denver' but resolution source is Buckley SFB (KBKF) in Aurora, CO."* — visible in the Langfuse `stage/compose_spec` span output under `cross_validation`.
 
 > **Narrative:** "This is the Denver/Buckley problem the brief warns about. We don't infer the station from the city name — the URL in ancillary data is authoritative. The station registry flags the mismatch for operator visibility."
 
