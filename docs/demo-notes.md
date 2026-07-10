@@ -1,7 +1,8 @@
 # OTB Weather Resolver — Full Demo Walkthrough
 
 > Screenshare guide for a ~55-minute presentation.
-> Flow: Architecture → show it working (Live + OTB) → Observability on live traces → prove determinism (Replay + Gold) → debugging.
+> Flow: Architecture → Live runs with interleaved traces → Replay + Gold → Debugging.
+> Observability is woven into each live call — not a separate section.
 
 ---
 
@@ -13,151 +14,155 @@ source .venv/bin/activate
 
 # 1. Confirm stack is running
 docker ps --format "table {{.Names}}\t{{.Status}}"
-# Expected: langfuse-web, langfuse-worker, litellm, postgres, clickhouse, redis, minio — all Up
 
-# 2. Langfuse health
+# 2. Langfuse + LiteLLM health
 curl -s http://localhost:3000/api/public/health
-# → {"status":"OK"}
-
-# 3. LiteLLM health
 curl -s -H "Authorization: Bearer sk-litellm-otb-master-key" http://localhost:4000/v1/models
-# → model list
 
-# 4. Confirm prompts are seeded
+# 3. Confirm prompts are seeded
 python scripts/seed_langfuse_prompts.py
 
-# 5. Run 3 cases in live mode to generate fresh traces for the observability section
+# 4. Run 2 live cases to generate traces (Tokyo high, Denver)
 python resolve.py --input data/markets.json --fixtures data/fixtures --live \
   --case-id tokyo_high_2026_06_01_29c_or_higher --output output/live_preflight.json
 
 python resolve.py --input data/markets.json --fixtures data/fixtures --live \
-  --case-id seoul_low_2026_06_01_16c --output output/live_preflight.json
-
-python resolve.py --input data/markets.json --fixtures data/fixtures --live \
   --case-id denver_high_2026_05_31_68_69f --output output/live_preflight.json
 
-# 6. Seed the demo broken prompt (for Section 5a)
+# 5. Seed demo broken prompt
 python demo/prompt_regression.py --force
 
-# 7. Browser tabs:
+# 6. Browser tabs:
 #    - http://localhost:3000  (Langfuse — admin@otb.local / admin123)
 #    - http://localhost:4000  (LiteLLM)
 #    - Langfuse → Prompts tab
-#    - Langfuse → Traces tab
+#    - Langfuse → Traces tab (two tabs: one for Tokyo, one for Denver)
 
-# 8. Editor tabs:
+# 7. Editor tabs:
 #    - config/pipeline.yaml
-#    - src/orchestration/steps.py
-#    - src/orchestration/runner.py
+#    - src/orchestration/runner.py  (_resolve_stage_fn)
+#    - src/orchestration/steps.py   (_trace_in_langfuse)
 ```
 
 ---
 
-## Section 1: Architecture Tour (5 min)
+## Section 1: Architecture (5 min)
 
-**Goal:** Show the system is a configurable DAG of stages, each automatically traced — not a giant prompt.
+**Goal:** Show it's a configurable DAG of stages, each auto-traced. Not a giant prompt.
 
-### 1.1 Open `config/pipeline.yaml`
+### 1.1 `config/pipeline.yaml`
 
 | What to point at | Talk track |
 |---|---|
-| The `stages` list | "Five lines of YAML define the entire pipeline. Each stage has a module, a function, and an `on_error` policy. `unclear` means: if this stage throws, mark the case unresolvable." |
-| Stage 2: `compose_spec` | "LLM + regex extraction of station, date, measurement from free-text ancillary data. The only stage that uses an LLM by default." |
-| Stage 3: `retrieve` | "Fetches from Wunderground API, falls back to Playwright headless browser, or replays from fixture. `on_error: unclear` — if all paths fail, we don't guess the weather." |
-| Stage 6: `decide` | "Deterministic mapping + conditional LLM reviewer. Reviewer only fires when confidence < 0.85." |
-| The `llm` block | "All LLM config in one place: model, base URL (LiteLLM proxy), prompt names, thresholds. Switch models by changing one env var." |
+| The `stages` list | "Five lines of YAML define the pipeline. Each stage: module, function, `on_error` policy. `unclear` means if this stage throws, mark unresolvable rather than guessing." |
+| Stage 2: `compose_spec` | "LLM + regex extraction of station, date, measurement from free-text ancillary data." |
+| Stage 3: `retrieve` | "Wunderground API → Playwright fallback → replay from fixture." |
+| Stage 6: `decide` | "Deterministic mapping + conditional LLM reviewer. Reviewer fires only when confidence < 0.85." |
+| The `llm` block | "All LLM config: model, LiteLLM proxy URL, prompt names, thresholds. Switch model = change one env var." |
 
-### 1.2 How a YAML stage becomes a traced function
+### 1.2 YAML → traced function
 
-Open `src/orchestration/runner.py`, scroll to `_resolve_stage_fn()` (line ~402):
+Open `runner.py` → `_resolve_stage_fn()`:
 
 ```python
-def _resolve_stage_fn(stage_def: dict[str, Any]) -> Callable:
-    module_path = stage_def["module"]       # e.g., "src.retrieval.spec"
-    function_name = stage_def["function"]   # e.g., "compose_retrieval_spec"
-    on_error = stage_def.get("on_error", "raise")
+mod = importlib.import_module(stage_def["module"])   # "src.retrieval.spec"
+raw_fn = getattr(mod, stage_def["function"])          # "compose_retrieval_spec"
 
-    mod = importlib.import_module(module_path)
-    raw_fn = getattr(mod, function_name)
-
-    from src.orchestration.steps import step
-
-    @step(name=stage_name, stage_num=stage_num, on_error=on_error)
-    def _wrapped(ctx, **kwargs):
-        return _call_stage(raw_fn, ctx, **kwargs)
-
-    return _wrapped
+@step(name=stage_name, on_error=stage_def["on_error"])
+def _wrapped(ctx, **kwargs):
+    return _call_stage(raw_fn, ctx, **kwargs)
 ```
 
-| What to point at | Talk track |
-|---|---|
-| `importlib.import_module` | "Reads `module` and `function` from YAML, resolves at startup. Add one line to YAML, it's picked up." |
-| `@step(name=..., on_error=on_error)` | "The `on_error` from YAML flows into the decorator. `unclear` means: if this stage throws, mark unresolvable. No guessing." |
-
-Now open `src/orchestration/steps.py`, scroll to `_trace_in_langfuse()` (line ~84):
+Open `steps.py` → `_trace_in_langfuse()`:
 
 ```python
-def _trace_in_langfuse(name, ctx, fn, deps):
-    with client.start_as_current_observation(
-        name=f"stage/{name}",
-        as_type="span",
-        input=_build_stage_input(name, ctx, deps),
-    ):
-        result = fn(ctx, **deps)
-        client.update_current_span(output=_build_stage_output(name, result))
-        return result
+with client.start_as_current_observation(name=f"stage/{name}", as_type="span",
+        input=_build_stage_input(name, ctx, deps)):
+    result = fn(ctx, **deps)
+    client.update_current_span(output=_build_stage_output(name, result))
 ```
 
-| What to point at | Talk track |
-|---|---|
-| `start_as_current_observation` | "Creates a span under the root trace. Every stage automatically appears in the waterfall." |
-| `_build_stage_input / _build_stage_output` | "Each stage captures what it received and produced. Trace is fully self-documenting." |
-
-> **Narrative:** "YAML defines what runs → `_resolve_stage_fn` wraps it with `@step` → `_trace_in_langfuse` creates the span. Define a new stage in YAML, it's automatically traced."
+> **Narrative:** "YAML defines what runs. `_resolve_stage_fn` imports it, wraps it with `@step`. `_trace_in_langfuse` creates the span. Define a new stage in YAML → it's automatically traced. ~30 lines of decorator code."
 
 ---
 
-## Section 2: Live Mode + OTB (10 min)
+## Section 2: Tokyo High — Live + Trace (5 min)
 
-**Goal:** Show it working against real data. This generates the traces we'll walk through next.
-
-### 2.1 Live: Tokyo high (Wunderground API)
+### 2.1 Run it
 
 ```bash
 python resolve.py \
-  --input data/markets.json \
-  --fixtures data/fixtures \
-  --live \
+  --input data/markets.json --fixtures data/fixtures --live \
   --case-id tokyo_high_2026_06_01_29c_or_higher \
   --output output/live_demo.json
 ```
 
-Narrate the log output as it runs:
+Narrate the terminal output:
 
 ```
 Calling LLM for spec extraction...              ← LLM reads ancillary data
-RetrievalSpec: station=RJTT aggregation=max    ← Extracted: Tokyo → Haneda Airport
+RetrievalSpec: station=RJTT aggregation=max    ← Tokyo Haneda, daily high
 Fetching Wunderground: RJTT 20260601            ← Primary API call
 Observations: 48 → finality confirmed           ← 48 hourly readings, next-day data exists
 Normalized: 31.0 C (completeness=1.00)          ← Daily high: 31°C
 Market asked: ≥29°C? 31 ≥ 29 → Yes (p2)        ← Deterministic, confidence 0.95
 ```
 
-> **Narrative:** "Three seconds end-to-end. Hits Wunderground, gets 48 hourly readings, extracts the daily high, compares against the market threshold. No giant prompt — each stage is a discrete step with a traceable output."
+> **Narrative:** "Three seconds. Hits Wunderground, 48 hourly readings, extracts high, compares. No giant prompt — each stage is a discrete step."
 
-### 2.2 Live: Denver range (station mapping)
+### 2.2 Walk its trace
+
+Switch to Langfuse → Traces → click the Tokyo trace:
+
+```
+resolve/tokyo_high_2026_06_01_29c_or_higher
+├── stage/validate
+├── stage/compose_spec
+│   └── spec-extraction          ← GENERATION (auto-captured)
+├── stage/retrieve
+├── stage/normalize
+├── stage/reconcile
+└── stage/decide
+```
+
+| Beat | Show | Talk track |
+|---|---|---|
+| Root span output | `recommendation: "p2"`, `confidence: 0.95`, `observed_value: 31.0` | "Answer at a glance." |
+| `stage/retrieve` | Input: `station_code: "RJTT"`. Output: `observation_count: 48`, `finality: "confirmed"`, source_trace with exact URLs and latencies | "Every source query recorded." |
+| `spec-extraction` GENERATION | Model, input prompt, output JSON, tokens, latency. Click linked prompt → jumps to prompt page | "Auto-captured. Zero manual instrumentation. Click the prompt link — this is the observability loop closing." |
+| `stage/normalize` | `completeness: 1.00`, `value: 31.0` | "Every normalization decision documented." |
+
+---
+
+## Section 3: Denver — Live + Trace (4 min)
+
+### 3.1 Run it
 
 ```bash
 python resolve.py \
   --input data/markets.json --fixtures data/fixtures --live \
-  --case-id denver_high_2026_05_31_68_69f --output output/live_demo.json
+  --case-id denver_high_2026_05_31_68_69f \
+  --output output/live_demo.json
 ```
 
-Point out the station mapping: title says "Denver" but the LLM extracts `KBKF` (Buckley SFB, Aurora CO) from the ancillary data URL. The station registry attaches the note: *"Market title says 'Denver' but resolution source is Buckley SFB (KBKF) in Aurora, CO."* — visible in the Langfuse `stage/compose_spec` span output under `cross_validation`.
+### 3.2 Station mapping in the trace
 
-> **Narrative:** "This is the Denver/Buckley problem the brief warns about. We don't infer the station from the city name — the URL in ancillary data is authoritative. The station registry flags the mismatch for operator visibility."
+Switch to Langfuse → Traces → click the Denver trace → `stage/compose_spec`:
 
-### 2.3 Live OTB: production proposed markets
+Point at `cross_validation` in the span output:
+```
+station_city_awareness: false
+station_city_awareness_detail: "Market title says 'Denver' but resolution source
+  is Buckley SFB (KBKF) in Aurora, CO."
+```
+
+> **Narrative:** "Title says Denver. Ancillary data URL says KBKF in Aurora. The LLM extracts from the URL — never the city name. The station registry flags the mismatch here. Compare with the Tokyo trace: no mismatch, no note. Side by side, the difference is obvious."
+
+---
+
+## Section 4: Live OTB + Trace (3 min)
+
+### 4.1 Run it
 
 ```bash
 python resolve_otb.py --max-markets 3
@@ -165,78 +170,38 @@ python resolve_otb.py --max-markets 3
 
 | Beat | Talk track |
 |---|---|
-| OTB API fetch | "Same resolver — different entry point. Polls the OTB Oracle API for live proposed Weather markets." |
-| Transform to MarketCase | "OTB API items are transformed into the same `MarketCase` objects `resolve.py` uses. The pipeline doesn't know the difference." |
-| Paper-propose | "Returns p1/p2/p3/p4/unclear recommendations. No settlement — paper-propose only. The team can compare our resolution against real-time markets." |
-| Fixture auto-save | "Live mode writes raw responses to `data/fixtures/`. Next time, replay mode uses that fixture. The system bootstraps its own determinism." |
+| OTB API fetch | "Same resolver — different entry point. Polls OTB Oracle API for live proposed Weather markets." |
+| Transform + run | "OTB items → MarketCase objects → same `runner.run_cases()`. Pipeline doesn't know the difference." |
+| Paper-propose | "p1/p2/p3/p4/unclear. No settlement. Compare our resolution against real-time markets." |
+| Fixture auto-save | "Live mode writes responses to `data/fixtures/`. Replay bootstraps its own determinism." |
+
+### 4.2 Trace comparison
+
+Open an OTB trace in Langfuse. Same waterfall structure — `resolve/{case_id}` → same 7 stage spans. "Different entry point, same pipeline, same trace."
 
 ---
 
-## Section 3: Observability (10 min)
+## Section 5: Prompt Registry (2 min)
 
-**Goal:** Walk through the traces generated by the live runs. Show Langfuse prompt registry, trace waterfall, and LiteLLM.
+Switch to Langfuse → **Prompts**. Quick tour:
 
-### 3.1 Langfuse Prompt Registry (3 min)
-
-Open Langfuse → **Prompts**. Show `weather-spec-extraction`:
-
-| Element | Talk track |
-|---|---|
-| Labels: `production`, `latest`, `demo-broken` | "The resolver fetches whatever has `production`. Create a new version, test with `staging`, promote. Rollback is a label change — zero code deploy." |
-| Template variables: `{{title}}`, `{{ancillary_data}}` | "Filled at runtime. The template stays in Langfuse." |
-| Version dropdown | "Full history. Every edit tracked." |
-
-Show `weather-reviewer`:
-
-| Element | Talk track |
-|---|---|
-| Constraint: `Answer ONLY with {"agree": true} or {"agree": false}` | "Can only escalate to `unclear`. Can't substitute its own p1/p2. Deliberate guardrail for conservatism." |
-
-### 3.2 Trace Waterfall (5 min)
-
-Open Langfuse → **Traces**. Click the most recent live trace.
-
-```
-resolve/tokyo_high_2026_06_01_29c_or_higher
-├── stage/validate
-├── stage/compose_spec
-│   └── spec-extraction          ← GENERATION (auto-captured LLM call)
-├── stage/retrieve                ← Wunderground API call recorded
-├── stage/normalize               ← completeness, quality flags
-├── stage/reconcile               ← threshold comparison
-└── stage/decide                  ← p2, confidence 0.95, deterministic
-```
-
-| Beat | What to show |
-|---|---|
-| **Root span output** | `recommendation: "p2"`, `confidence: 0.95`, `observed_value: 31.0`. "Answer at a glance." |
-| **stage/retrieve span** | `observation_count: 48`, `finality: "confirmed"`, source_trace with exact URLs and latencies. "Every source query recorded." |
-| **spec-extraction GENERATION** | Auto-captured: model, input, output JSON, tokens, latency. Linked to `weather-spec-extraction` prompt. Click link → jumps to prompt page. "No manual instrumentation. The observability loop closes: trace → prompt version → fix." |
-| **stage/normalize span** | Completeness, quality flags, unit conversion. "Every normalization decision recorded." |
-
-### 3.3 LiteLLM Proxy (2 min)
-
-Open `http://localhost:4000` → Dashboard. Then `cat litellm_config.yaml`:
-
-> **Narrative:** "Provider-agnostic routing. DeepSeek today — add GPT-4 or Claude with one line. Every proxied request logged independently of Langfuse."
+| Prompt | What to show | Talk track |
+|---|---|---|
+| `weather-spec-extraction` | Labels, version dropdown, `{{title}}` `{{ancillary_data}}` vars | "Resolver fetches whatever has `production` label. Promote a new version: label change. Rollback: label change. Zero code deploy." |
+| `weather-reviewer` | Constraint: `Answer ONLY with {"agree": true} or {"agree": false}` | "Can only escalate to unclear. Can't substitute p1/p2. Deliberate conservatism guardrail." |
+| `demo-broken` label | Point at it in the dropdown, don't click yet | "We'll come back to this in the debugging section." |
 
 ---
 
-## Section 4: Replay + vs Gold (5 min)
+## Section 6: Replay + vs Gold (4 min)
 
-**Goal:** Prove determinism. Same answers, no network, matches Polymarket resolutions.
-
-### 4.1 Run all 5 in replay mode
+**Goal:** Prove determinism. Same answers, no network.
 
 ```bash
 python resolve.py \
-  --input data/markets.json \
-  --fixtures data/fixtures \
-  --output output/results.json \
-  --gold gold_visible/answers.json
+  --input data/markets.json --fixtures data/fixtures \
+  --output output/results.json --gold gold_visible/answers.json
 ```
-
-### 4.2 Show the results
 
 ```
 ============================================================
@@ -251,75 +216,66 @@ denver_high_2026_05_31_68_69f             p1        p1      0.95  ✓
 Match: 5/5 (100%)
 ```
 
-> **Narrative:** "Five for five. Determined the same way each time. The Tokyo low case had partial fixture data — confidence dropped below 0.85, reviewer was invoked, confirmed at 0.70. Same trace structure as live mode — replay just swaps the network call for a fixture load."
-
-### 4.3 Show evidence quality
-
-```bash
-python evaluate.py --predictions output/results.json --gold gold_visible/answers.json
-```
-
-Point at the completeness, decision path, and source columns. "Every answer comes with its evidence chain."
+> **Narrative:** "All five match Polymarket resolutions. Tokyo low had partial fixture data — confidence dropped below 0.85, reviewer invoked, confirmed at 0.70. Same answer as live mode, no network — the fixture is the replay anchor. Run `evaluate.py` for evidence-quality breakdown per case."
 
 ---
 
-## Section 5: Debugging with Observability (15 min)
+## Section 7: Debugging with Observability (15 min)
 
-**Goal:** Now that they've seen it work, show how observability catches real problems.
+**Goal:** They've seen it work. Now show how observability catches real problems.
 
-### 5a. Prompt Regression (5 min)
+### 7a. Prompt Regression (5 min)
 
-**Story:** Someone promotes a bad prompt. How do we detect and fix it?
+**Story:** Someone promotes a bad prompt. How do we detect it?
 
 ```bash
-# Show the broken prompt exists
+# Show side-by-side comparison
 python demo/prompt_regression.py
 
-# Promote → run → rollback (the full cycle)
+# Full cycle: promote → run → detect → rollback
 python demo/prompt_regression.py --promote --case-id tokyo_low_2026_06_01_20c --yes
 ```
 
-In Langfuse, refresh Traces → find the broken run:
+Refresh Langfuse Traces → find the broken run:
 
-| What to point at | Talk track |
+| Trace element | What went wrong |
 |---|---|
-| `stage/compose_spec` output | `aggregation: "max"` — wrong! Market asked for "lowest temperature." |
-| `spec-extraction` GENERATION | Linked to the broken prompt version. Full prompt content visible. |
-| Root span | Wrong recommendation. |
+| `stage/compose_spec` output | `aggregation: "max"` — market asked for "lowest temperature" |
+| `spec-extraction` GENERATION | Linked to the broken prompt version. Full prompt content visible |
+| Root span output | Wrong recommendation |
 
-> **Narrative:** "The trace links to the exact prompt version that caused it. Fix: roll back the label. No code deploy, no restart. The trace told us the what, the why, and the fix — in one view."
+> **Narrative:** "Trace links to exact prompt version that caused it. Fix: roll back the label. No code deploy. Trace told us what, why, and the fix — in one view."
 
-### 5b. Unclear Case (5 min)
+### 7b. Unclear Case (5 min)
 
 **Story:** A market returned `unclear`. Why?
 
 ```bash
 python resolve.py \
-  --input data/demo_cases.json \
-  --fixtures data/fixtures/demo \
+  --input data/demo_cases.json --fixtures data/fixtures/demo \
   --output output/demo_unclear_results.json
 ```
 
-The fixture has `observations: []`, `extracted_value: null`. Pipeline output:
+Fixture has `observations: []`, `extracted_value: null`. Terminal:
 
 ```
-stage_04_normalize: FAILED — no_observations: No observations in target window
+stage_04_normalize: FAILED — no_observations
 Pipeline short-circuited at stage 'normalize': unclear
 ```
 
-In Langfuse trace:
+In Langfuse trace for this run:
 
-| What to point at | Talk track |
+| Span | Shows |
 |---|---|
-| `stage/retrieve` output | `observation_count: 0`. "Data was fetched but empty." |
-| `stage/normalize` span | Hard gate: `no_observations`. Terminal reason: `unclear`. |
-| Root span output | `recommendation: "unclear"`. "At a glance: no data → unclear. No guess was made." |
+| `stage/retrieve` output | `observation_count: 0` |
+| `stage/normalize` | Hard gate: `no_observations`. Terminal: `unclear` |
+| Root span | `recommendation: "unclear"` |
 
-Compare side-by-side with a healthy trace from Section 2 (48 observations, confidence 0.95).
+Compare side-by-side with Tokyo trace (48 observations, confidence 0.95). "Difference is immediate. Operator doesn't guess — trace tells them."
 
-### 5c. Service Failure (5 min)
+### 7c. Service Failure (5 min)
 
-**Story:** LiteLLM goes down. Does the system fall apart?
+**Story:** LiteLLM goes down. Does it fall apart?
 
 ```bash
 docker compose stop litellm
@@ -328,20 +284,20 @@ python resolve.py --input data/markets.json --fixtures data/fixtures \
   --case-id tokyo_high_2026_06_01_29c_or_higher --output output/demo_llm_down.json
 ```
 
-Terminal output:
+Terminal:
 ```
 Calling LLM for spec extraction (attempt 1/3)...  Retrying...
 LLM extraction failed after 3 attempts — falling back to regex
 Regex extraction succeeded: station=RJTT aggregation=max method=regex
 ```
 
-In Langfuse trace: `spec-extraction` GENERATION shows error status, but `stage/compose_spec` completed with `extraction_method: "regex"`.
+In Langfuse: `spec-extraction` GENERATION shows error, but `stage/compose_spec` completed with `extraction_method: "regex"`.
 
 ```bash
 docker compose start litellm
 ```
 
-> **Narrative:** "LLM unavailable. Three retries with backoff. Regex fallback kicks in — successfully parses station, date, measurement. Pipeline continues. Answer is correct. The trace documents the entire fallback: what failed, what succeeded, what path was taken."
+> **Narrative:** "LLM unavailable. Three retries. Regex fallback parses station, date, measurement. Pipeline continues. Answer unchanged. Trace documents every step of the fallback chain."
 
 ---
 
@@ -352,7 +308,6 @@ resolve.py / resolve_otb.py
   │
   ├─ PipelineRunner.run()                          ← config/pipeline.yaml
   │   └─ _run_case_with_trace()                    ← Langfuse root trace per case
-  │       │
   │       ├─ stage/validate                        [span]
   │       ├─ stage/compose_spec                    [span via @step]
   │       │   └─ spec-extraction                   [GENERATION — langfuse.openai]
@@ -380,39 +335,22 @@ resolve.py / resolve_otb.py
 | `src/orchestration/steps.py` | `@step` decorator, span creation |
 | `src/observability/llm.py` | LLMClient with `langfuse.openai.OpenAI` |
 | `src/retrieval/dispatch.py` | Retrieval dispatch (live fallback tree, replay) |
-| `src/decision/resolver.py` | Deterministic mapping + conditional LLM reviewer |
 | `scripts/seed_langfuse_prompts.py` | Seeds prompts into Langfuse |
-| `demo/prompt_regression.py` | Prompt regression demo (promote → run → rollback) |
-| `data/demo_cases.json` + `data/fixtures/demo/` | Demo fixtures for unclear/failure scenarios |
+| `demo/prompt_regression.py` | Prompt regression demo |
 
 ---
 
 ## Troubleshooting
 
-### Traces not appearing in Langfuse
-
 ```bash
-python -c "from src.observability.tracing import get_langfuse_client; print(get_langfuse_client())"
+# Langfuse
+curl -s http://localhost:3000/api/public/health
 grep LANGFUSE .env
-```
 
-### LiteLLM can't reach model
-
-```bash
+# LiteLLM
 curl -s -H "Authorization: Bearer sk-litellm-otb-master-key" http://localhost:4000/v1/models
 docker compose restart litellm
-```
 
-### Demo unclear case resolves instead of gating
-
-The fixture at `data/fixtures/demo/RJTT_20260601_temperature_min.json` must have `observations: []` and `extracted_value.value: null`. Verify:
-
-```bash
-python -c "
-import json
-with open('data/fixtures/demo/RJTT_20260601_temperature_min.json') as f:
-    d = json.load(f)
-print('observations:', len(d.get('observations', [])))
-print('extracted_value:', d.get('extracted_value', {}))
-"
+# Stack
+docker compose down && docker compose up -d
 ```
